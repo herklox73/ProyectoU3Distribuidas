@@ -1,0 +1,12 @@
+Django==4.2.30
+asgiref==3.11.1
+sqlparse==0.5.5
+djangorestframework==3.16.1
+django-unfold==0.67.0
+python-dotenv==1.2.1
+celery==5.6.3
+redis==7.0.1
+whitenoise==6.9.0
+gunicorn==23.0.0
+dj-database-url==2.3.0
+psycopg2-binary==2.9.10

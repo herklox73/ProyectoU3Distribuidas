@@ -1,0 +1,24 @@
+# ── Python / Django ──────────────────────────────────────
+backend/venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/**/*.pyo
+backend/.env
+backend/db.sqlite3
+
+# ── Media subida por usuarios ─────────────────────────────
+backend/media/
+
+# ── Node.js ───────────────────────────────────────────────
+backend/whatsapp_api/node_modules/
+
+# ── Sesión de WhatsApp (NO subir nunca) ───────────────────
+backend/whatsapp_api/.wwebjs_auth/
+backend/whatsapp_api/.wwebjs_cache/
+backend/whatsapp_api/session/
+
+# ── Archivos del sistema ──────────────────────────────────
+.DS_Store
+Thumbs.db
+*.log
