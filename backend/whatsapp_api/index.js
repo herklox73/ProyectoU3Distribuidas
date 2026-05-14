@@ -33,7 +33,6 @@ function createClient() {
                 '--disable-accelerated-2d-canvas',
                 '--no-first-run',
                 '--no-zygote',
-                '--single-process',
                 '--disable-gpu'
             ],
         }
@@ -149,76 +148,102 @@ function createClient() {
 client = createClient();
 client.initialize();
 
-// ─── Validar si un número existe en WhatsApp ──────────────────────────
-async function numberExistsOnWhatsApp(formattedNumber) {
-    try {
-        return await client.isRegisteredUser(formattedNumber);
-    } catch (e) {
-        return true;
+// ─── Cola de envío asíncrono ──────────────────────────────────────────
+// Responde a Django de inmediato (sin bloquear) y procesa los mensajes
+// en background uno por uno con pausa entre ellos.
+const sendQueue = [];
+let queueRunning = false;
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function processSendQueue() {
+    if (queueRunning) return;
+    queueRunning = true;
+    console.log('[Queue] Iniciando procesamiento de cola...');
+
+    while (sendQueue.length > 0) {
+        const task = sendQueue.shift();
+        const { cleanNumber, formattedNumber, message, media_base64, media_mimetype,
+                media_filename, media_url } = task;
+
+        if (!isReady) {
+            console.log(`[Queue] WhatsApp no listo. Esperando 5s antes de reintentar ${cleanNumber}...`);
+            sendQueue.unshift(task); // devolver al frente de la cola
+            await sleep(5000);
+            continue;
+        }
+
+        try {
+            let sentMsg;
+            if (media_base64 && media_mimetype) {
+                const media = new MessageMedia(media_mimetype, media_base64, media_filename || 'archivo');
+                sentMsg = await client.sendMessage(formattedNumber, media, { caption: message });
+            } else if (media_url) {
+                const media = await MessageMedia.fromUrl(media_url, { unsafeMime: true });
+                sentMsg = await client.sendMessage(formattedNumber, media, { caption: message });
+            } else {
+                sentMsg = await client.sendMessage(formattedNumber, message);
+            }
+            const wppId = sentMsg && sentMsg.id ? sentMsg.id._serialized : null;
+            console.log(`[Queue] ✓ Enviado a ${cleanNumber} | id=${wppId}`);
+
+        } catch (err) {
+            const errorMsg = err.message || String(err);
+            const isDetachedFrame = errorMsg.includes('detached Frame') || errorMsg.includes('detached');
+            const isInvalid = errorMsg === 't: t' || errorMsg.includes('t: t');
+
+            if (isInvalid) {
+                console.log(`[Queue] Numero invalido: ${cleanNumber}`);
+            } else if (isDetachedFrame) {
+                console.error(`[Queue] Frame detachado enviando a ${cleanNumber}. Reiniciando cliente...`);
+                isReady = false;
+                sendQueue.unshift(task); // reintentar después del reinicio
+                setTimeout(() => {
+                    currentQR = null;
+                    try { client.destroy(); } catch (_) {}
+                    client = createClient();
+                    client.initialize();
+                }, 3000);
+                await sleep(15000); // esperar reinicio completo
+                continue;
+            } else {
+                console.error(`[Queue] Error enviando a ${cleanNumber}:`, errorMsg);
+            }
+        }
+
+        // Pausa entre mensajes para no saturar WhatsApp
+        if (sendQueue.length > 0) {
+            await sleep(3000);
+        }
     }
+
+    queueRunning = false;
+    console.log('[Queue] Cola vaciada.');
 }
 
-// ─── Endpoint: Enviar mensaje ─────────────────────────────────────────
-app.post('/api/send', async (req, res) => {
+// ─── Endpoint: Enviar mensaje (responde inmediatamente) ───────────────
+app.post('/api/send', (req, res) => {
     if (!isReady) {
         return res.status(503).json({ success: false, error: 'WhatsApp no conectado. Escanea el QR.' });
     }
 
-    try {
-        const { number, message, media_url, media_base64, media_mimetype, media_filename } = req.body;
+    const { number, message, media_url, media_base64, media_mimetype, media_filename } = req.body;
 
-        if (!number || !message) {
-            return res.status(400).json({ success: false, error: 'Faltan parametros: number y message son requeridos.' });
-        }
-
-        const cleanNumber = number.replace(/[^0-9]/g, '');
-        const formattedNumber = `${cleanNumber}@c.us`;
-
-        // No se hace isRegisteredUser() — era lento (30-60s) y causaba timeouts.
-        // Los números inválidos fallan con error 't: t' que ya se maneja abajo.
-
-        let sentMsg;
-
-        if (media_base64 && media_mimetype) {
-            const media = new MessageMedia(media_mimetype, media_base64, media_filename || 'archivo');
-            sentMsg = await client.sendMessage(formattedNumber, media, { caption: message });
-        } else if (media_url) {
-            const media = await MessageMedia.fromUrl(media_url, { unsafeMime: true });
-            sentMsg = await client.sendMessage(formattedNumber, media, { caption: message });
-        } else {
-            sentMsg = await client.sendMessage(formattedNumber, message);
-            console.log(`[WhatsApp] Texto enviado a ${cleanNumber}: "${message.substring(0, 50)}..."`);
-        }
-
-        res.json({
-            success: true,
-            wpp_message_id: sentMsg && sentMsg.id ? sentMsg.id._serialized : null
-        });
-
-    } catch (err) {
-        const errorMsg = err.message || String(err);
-        const isInvalidNumber = errorMsg === 't: t' || errorMsg.includes('t: t');
-        const isDetachedFrame = errorMsg.includes('detached Frame') || errorMsg.includes('detached');
-
-        if (isInvalidNumber) {
-            return res.status(422).json({ success: false, error: 'Numero no tiene WhatsApp o es invalido.', code: 'INVALID_NUMBER' });
-        }
-
-        // Frame detachado = el navegador se cayó internamente → reiniciar cliente
-        if (isDetachedFrame) {
-            console.error('[WhatsApp] Frame detachado detectado. Reiniciando cliente en 3 segundos...');
-            isReady = false;
-            setTimeout(() => {
-                try { client.destroy(); } catch (_) {}
-                client = createClient();
-                client.initialize();
-            }, 3000);
-            return res.status(503).json({ success: false, error: 'WhatsApp se desconecto internamente. Reconectando...', code: 'DETACHED_FRAME' });
-        }
-
-        console.error(`[WhatsApp] Error enviando a ${req.body.number}:`, err.message || err);
-        res.status(500).json({ success: false, error: err.message || 'Error interno' });
+    if (!number || !message) {
+        return res.status(400).json({ success: false, error: 'Faltan parametros: number y message son requeridos.' });
     }
+
+    const cleanNumber = number.replace(/[^0-9]/g, '');
+    const formattedNumber = `${cleanNumber}@c.us`;
+
+    // Encolar el mensaje y responder inmediatamente a Django
+    sendQueue.push({ cleanNumber, formattedNumber, message, media_url,
+                     media_base64, media_mimetype, media_filename });
+
+    res.json({ success: true, status: 'queued', queue_size: sendQueue.length });
+
+    // Arrancar el procesador de cola si no está corriendo
+    processSendQueue();
 });
 
 // ─── Endpoint: Estado del servidor ───────────────────────────────────
