@@ -18,7 +18,8 @@ COPY . .
 # Puerto
 EXPOSE 8000
 
-# Arranque: migrar BD + static + servidor
-CMD python manage.py migrate --noinput && \
-    python manage.py collectstatic --noinput && \
-    gunicorn core.wsgi:application --bind 0.0.0.0:${PORT:-8000} --workers 2 --timeout 120
+# Script de arranque
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+CMD ["/entrypoint.sh"]
