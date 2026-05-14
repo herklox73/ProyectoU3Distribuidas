@@ -25,6 +25,7 @@ function createClient() {
         },
         puppeteer: {
             headless: true,
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -32,6 +33,7 @@ function createClient() {
                 '--disable-accelerated-2d-canvas',
                 '--no-first-run',
                 '--no-zygote',
+                '--single-process',
                 '--disable-gpu'
             ],
         }
@@ -102,7 +104,8 @@ function createClient() {
         console.log(`[WhatsApp] Mensaje entrante de ${number}: ${msg.body.substring(0, 60)}`);
 
         try {
-            await fetch('http://localhost:8000/whatsapp/api/webhook/', {
+            const djangoUrl = process.env.DJANGO_API_URL || 'http://localhost:8000';
+            await fetch(`${djangoUrl}/whatsapp/api/webhook/`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ from: number, body: msg.body, type: msg.type })
@@ -123,7 +126,8 @@ function createClient() {
         console.log(`[WhatsApp] ACK para ${number}: ${status} (ack=${ack})`);
 
         try {
-            await fetch('http://localhost:8000/whatsapp/api/message-ack/', {
+            const djangoUrl = process.env.DJANGO_API_URL || 'http://localhost:8000';
+            await fetch(`${djangoUrl}/whatsapp/api/message-ack/`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
