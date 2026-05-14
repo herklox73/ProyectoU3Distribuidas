@@ -26,6 +26,8 @@ urlpatterns = [
     path('monitor/<int:campaign_id>/', views.campaign_monitor_view, name='campaign_monitor'),
     # ACK de entrega/lectura (llamado por Node.js)
     path('api/message-ack/', views.api_message_ack, name='api_message_ack'),
+    # Resultado real del envío desde la cola de Node.js
+    path('api/send-result/', views.api_send_result, name='api_send_result'),
     # Cambiar número de WhatsApp (cerrar sesión en Node.js)
     path('api/cambiar-numero/', views.api_cambiar_numero, name='api_cambiar_numero'),
     # Proxy: devuelve QR actual desde Node.js

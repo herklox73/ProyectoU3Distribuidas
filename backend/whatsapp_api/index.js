@@ -188,6 +188,16 @@ async function processSendQueue() {
             const wppId = sentMsg && sentMsg.id ? sentMsg.id._serialized : null;
             console.log(`[Queue] ✓ Enviado a ${cleanNumber} | id=${wppId}`);
 
+            // Notificar a Django: envío exitoso
+            try {
+                const djangoUrl = process.env.DJANGO_API_URL || 'http://localhost:8000';
+                await fetch(`${djangoUrl}/whatsapp/api/send-result/`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ number: cleanNumber, status: 'sent', wpp_message_id: wppId })
+                });
+            } catch (e) { /* Django no disponible */ }
+
         } catch (err) {
             const errorMsg = err.message || String(err);
             const isDetachedFrame = errorMsg.includes('detached Frame') || errorMsg.includes('detached');
@@ -195,6 +205,14 @@ async function processSendQueue() {
 
             if (isInvalid) {
                 console.log(`[Queue] Numero invalido: ${cleanNumber}`);
+                try {
+                    const djangoUrl = process.env.DJANGO_API_URL || 'http://localhost:8000';
+                    await fetch(`${djangoUrl}/whatsapp/api/send-result/`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ number: cleanNumber, status: 'failed', error: 'Numero invalido' })
+                    });
+                } catch (e) { /* Django no disponible */ }
             } else if (isDetachedFrame) {
                 console.error(`[Queue] Frame detachado enviando a ${cleanNumber}. Reiniciando cliente...`);
                 isReady = false;
@@ -209,6 +227,15 @@ async function processSendQueue() {
                 continue;
             } else {
                 console.error(`[Queue] Error enviando a ${cleanNumber}:`, errorMsg);
+                // Notificar a Django: envío fallido
+                try {
+                    const djangoUrl = process.env.DJANGO_API_URL || 'http://localhost:8000';
+                    await fetch(`${djangoUrl}/whatsapp/api/send-result/`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ number: cleanNumber, status: 'failed', error: errorMsg })
+                    });
+                } catch (e) { /* Django no disponible */ }
             }
         }
 

@@ -296,6 +296,41 @@ def api_message_ack(request):
 
 
 @csrf_exempt
+def api_send_result(request):
+    """
+    Llamado por Node.js cuando un mensaje de la cola fue procesado (enviado o fallido).
+    Actualiza el estado real del mensaje en Django.
+    """
+    if request.method != 'POST':
+        return JsonResponse({"success": False}, status=405)
+    try:
+        data   = json.loads(request.body)
+        number = data.get('number', '').strip()
+        status = data.get('status', '')       # 'sent' o 'failed'
+        wpp_id = data.get('wpp_message_id', '') or ''
+
+        if not number or not status:
+            return JsonResponse({"success": False, "error": "Faltan parametros"}, status=400)
+
+        # Buscar el mensaje outbound más reciente en estado 'pending' para ese número
+        msg = Message.objects.filter(
+            phone_number__icontains=number,
+            direction='outbound',
+            delivery_status='pending'
+        ).order_by('-sent_at').first()
+
+        if msg:
+            msg.delivery_status = status
+            if wpp_id and not msg.wpp_message_id:
+                msg.wpp_message_id = wpp_id
+            msg.save()
+
+        return JsonResponse({"success": True, "updated": 1 if msg else 0})
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=500)
+
+
+@csrf_exempt
 def dummy_success(request):
     return JsonResponse({"success": True, "status": "ok"})
 

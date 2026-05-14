@@ -638,14 +638,9 @@ def _send_campaign_background(campaign_id, contact_ids):
                     res = requests.post(_whatsapp_url('/api/send'), json=payload, timeout=90)
 
                     if res.status_code == 200:
-                        delivery_status = 'sent'
+                        delivery_status = 'pending'  # Node lo actualizará a 'sent'/'failed' via /api/send-result/
                         progress.sent += 1
-                        # Guardar el ID de WhatsApp para que los ACKs actualicen los ticks
-                        try:
-                            wpp_msg_id = res.json().get('wpp_message_id') or None
-                        except Exception:
-                            pass
-                        print(f"[MassSend] OK → {contact.phone_number} | wpp_id={wpp_msg_id}")
+                        print(f"[MassSend] Encolado → {contact.phone_number}")
                     elif res.status_code == 422:
                         progress.failed += 1
                         progress.last_error = f"Sin WhatsApp: {contact.phone_number}"
