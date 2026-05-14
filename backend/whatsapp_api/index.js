@@ -1,4 +1,4 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const express = require('express');
 const cors = require('cors');
@@ -17,7 +17,7 @@ let currentQR = null;
 let pairingCode = null;
 let pairingPhone = null;
 let sock = null;
-let reconnecting = false;
+let reconnectTimer = null;
 
 // ─── Cola de envío ────────────────────────────────────────────────────
 const sendQueue = [];
@@ -36,25 +36,44 @@ async function notifyDjango(path, body) {
     } catch (e) { /* Django no disponible */ }
 }
 
+// ─── Programar reconexión (única) ─────────────────────────────────────
+function scheduleReconnect(delay = 5000) {
+    if (reconnectTimer) return; // ya hay una reconexión programada
+    console.log(`[WhatsApp] Reconectando en ${delay / 1000}s...`);
+    reconnectTimer = setTimeout(async () => {
+        reconnectTimer = null;
+        await startClient();
+    }, delay);
+}
+
 // ─── Crear cliente WhatsApp (Baileys) ─────────────────────────────────
-async function createClient() {
-    if (reconnecting) return;
-    reconnecting = true;
+async function startClient() {
+    // Cerrar socket anterior si existe
+    if (sock) {
+        try { sock.end(new Error('Reiniciando')); } catch (_) {}
+        sock = null;
+    }
 
     try {
+        // Obtener la versión más reciente de WhatsApp Web
+        const { version } = await fetchLatestBaileysVersion();
+        console.log(`[WhatsApp] Usando versión WA: ${version.join('.')}`);
+
         const { state, saveCreds } = await useMultiFileAuthState('./auth_info_baileys');
 
-        const newSock = makeWASocket({
+        sock = makeWASocket({
+            version,
             auth: state,
             printQRInTerminal: false,
             logger: P({ level: 'silent' }),
-            browser: Browsers.ubuntu('Chrome'),
+            browser: ['MassSend', 'Chrome', '120.0.0.0'],
             connectTimeoutMs: 60000,
             defaultQueryTimeoutMs: 60000,
+            retryRequestDelayMs: 2000,
         });
 
         // ─── Eventos de conexión ──────────────────────────────────────
-        newSock.ev.on('connection.update', async (update) => {
+        sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect, qr } = update;
 
             if (qr) {
@@ -66,11 +85,10 @@ async function createClient() {
                 console.log('====================================================');
                 qrcode.generate(qr, { small: true });
 
-                // Si hay número pendiente para código de vinculación
                 if (pairingPhone) {
                     try {
                         console.log(`[WhatsApp] Solicitando código de vinculación para ${pairingPhone}...`);
-                        const code = await newSock.requestPairingCode(pairingPhone);
+                        const code = await sock.requestPairingCode(pairingPhone);
                         pairingCode = code;
                         currentQR = null;
                         console.log(`[WhatsApp] Código de vinculación: ${code}`);
@@ -83,18 +101,21 @@ async function createClient() {
 
             if (connection === 'close') {
                 isReady = false;
-                reconnecting = false;
-                const statusCode = (lastDisconnect?.error instanceof Boom)
-                    ? lastDisconnect.error.output.statusCode
-                    : 0;
-                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+                const error = lastDisconnect?.error;
+                const statusCode = (error instanceof Boom) ? error.output.statusCode : 0;
 
-                if (shouldReconnect) {
-                    console.log('[WhatsApp] Desconectado. Reconectando en 5s...');
-                    setTimeout(createClient, 5000);
+                // Log detallado del error real
+                console.log(`[WhatsApp] Desconectado | código: ${statusCode} | motivo: ${error?.message || 'desconocido'}`);
+
+                if (statusCode === DisconnectReason.loggedOut) {
+                    console.log('[WhatsApp] Sesión cerrada. Borrando credenciales...');
+                    try { fs.rmSync('./auth_info_baileys', { recursive: true, force: true }); } catch (_) {}
+                    scheduleReconnect(2000);
+                } else if (statusCode === DisconnectReason.connectionReplaced) {
+                    console.log('[WhatsApp] Conexión reemplazada por otra sesión.');
+                    // No reconectar
                 } else {
-                    console.log('[WhatsApp] Sesión cerrada (logout). Esperando nuevo QR...');
-                    setTimeout(createClient, 2000);
+                    scheduleReconnect(5000);
                 }
             }
 
@@ -103,20 +124,19 @@ async function createClient() {
                 currentQR = null;
                 pairingCode = null;
                 pairingPhone = null;
-                reconnecting = false;
                 console.log('[WhatsApp] Conectado exitosamente. Sistema listo.');
             }
         });
 
-        newSock.ev.on('creds.update', saveCreds);
+        sock.ev.on('creds.update', saveCreds);
 
         // ─── Mensajes ENTRANTES → Django ──────────────────────────────
-        newSock.ev.on('messages.upsert', async ({ messages, type }) => {
+        sock.ev.on('messages.upsert', async ({ messages, type }) => {
             if (type !== 'notify') return;
             for (const msg of messages) {
                 if (msg.key.fromMe) continue;
                 const jid = msg.key.remoteJid || '';
-                if (!jid.endsWith('@s.whatsapp.net')) continue; // solo individuales
+                if (!jid.endsWith('@s.whatsapp.net')) continue;
 
                 const number = jid.replace('@s.whatsapp.net', '');
                 const body = msg.message?.conversation ||
@@ -129,7 +149,7 @@ async function createClient() {
         });
 
         // ─── ACK de mensajes SALIENTES → Django ───────────────────────
-        newSock.ev.on('messages.update', async (updates) => {
+        sock.ev.on('messages.update', async (updates) => {
             for (const update of updates) {
                 if (!update.key?.fromMe) continue;
                 const jid = update.key.remoteJid || '';
@@ -139,30 +159,25 @@ async function createClient() {
                 const statusNum = update.update?.status;
                 if (!statusNum) continue;
 
-                // Baileys: 1=enviado al servidor, 2=entregado, 3=leído, 4=reproducido
                 const statusMap = { 1: 'sent', 2: 'delivered', 3: 'read', 4: 'read' };
                 const status = statusMap[statusNum];
                 if (!status) continue;
 
                 await notifyDjango('/whatsapp/api/message-ack/', {
                     wpp_message_id: update.key.id || null,
-                    number,
-                    status,
-                    ack: statusNum
+                    number, status, ack: statusNum
                 });
             }
         });
 
-        sock = newSock;
     } catch (err) {
-        reconnecting = false;
-        console.error('[WhatsApp] Error creando cliente:', err.message);
-        setTimeout(createClient, 10000);
+        console.error('[WhatsApp] Error al iniciar cliente:', err.message);
+        scheduleReconnect(10000);
     }
 }
 
 // ─── Inicializar ──────────────────────────────────────────────────────
-createClient();
+startClient();
 
 // ─── Procesador de cola ───────────────────────────────────────────────
 async function processSendQueue() {
@@ -208,18 +223,15 @@ async function processSendQueue() {
                 const resp = await fetch(media_url);
                 const buffer = Buffer.from(await resp.arrayBuffer());
                 const mime = resp.headers.get('content-type') || 'application/octet-stream';
-                if (mime.startsWith('image/')) {
-                    msgResult = await sock.sendMessage(jid, { image: buffer, caption: message || '', mimetype: mime });
-                } else {
-                    msgResult = await sock.sendMessage(jid, { document: buffer, caption: message || '', mimetype: mime });
-                }
+                msgResult = await sock.sendMessage(jid, {
+                    image: buffer, caption: message || '', mimetype: mime
+                });
             } else {
                 msgResult = await sock.sendMessage(jid, { text: message });
             }
 
             const wppId = msgResult?.key?.id || null;
             console.log(`[Queue] ✓ Enviado a ${cleanNumber} | id=${wppId}`);
-
             await notifyDjango('/whatsapp/api/send-result/', {
                 number: cleanNumber, status: 'sent', wpp_message_id: wppId
             });
@@ -227,14 +239,13 @@ async function processSendQueue() {
         } catch (err) {
             const errorMsg = err.message || String(err);
             console.error(`[Queue] ✗ Error enviando a ${cleanNumber}:`, errorMsg);
-
             await notifyDjango('/whatsapp/api/send-result/', {
                 number: cleanNumber, status: 'failed', error: errorMsg
             });
         }
 
         if (sendQueue.length > 0) {
-            await sleep(2000); // 2s entre mensajes
+            await sleep(2000);
         }
     }
 
@@ -286,11 +297,10 @@ app.post('/api/request-pairing', async (req, res) => {
 
     if (sock) {
         try {
-            console.log(`[WhatsApp] Solicitando código de vinculación para ${cleanPhone}...`);
             const code = await sock.requestPairingCode(cleanPhone);
             pairingCode = code;
             currentQR = null;
-            console.log(`[WhatsApp] Código obtenido: ${code}`);
+            console.log(`[WhatsApp] Código de vinculación: ${code}`);
             return res.json({ success: true, code });
         } catch (e) {
             pairingPhone = null;
@@ -307,22 +317,15 @@ app.post('/api/logout', async (req, res) => {
         currentQR = null;
         pairingCode = null;
         pairingPhone = null;
-        reconnecting = false;
+        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
 
         res.json({ success: true, message: 'Desconectando...' });
 
-        try {
-            if (sock) await sock.logout();
-        } catch (e) {
-            console.log('[WhatsApp] Error en logout:', e.message);
-        }
-
-        // Eliminar archivos de sesión para limpiar completamente
+        try { if (sock) await sock.logout(); } catch (e) {}
         try { fs.rmSync('./auth_info_baileys', { recursive: true, force: true }); } catch (_) {}
 
-        setTimeout(createClient, 2000);
+        setTimeout(startClient, 2000);
     } catch (err) {
-        console.error('[WhatsApp] Error en logout:', err.message);
         if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
     }
 });
@@ -330,5 +333,5 @@ app.post('/api/logout', async (req, res) => {
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`[WhatsApp] API corriendo en http://0.0.0.0:${PORT}`);
-    console.log(`[WhatsApp] Iniciando WhatsApp (Baileys)... espera unos segundos.`);
+    console.log('[WhatsApp] Iniciando WhatsApp (Baileys)...');
 });
