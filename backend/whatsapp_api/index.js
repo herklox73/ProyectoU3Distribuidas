@@ -25,6 +25,7 @@ function createClient() {
         },
         puppeteer: {
             headless: true,
+            protocolTimeout: 120000,
             executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
             args: [
                 '--no-sandbox',
