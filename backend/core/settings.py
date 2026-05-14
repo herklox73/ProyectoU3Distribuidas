@@ -96,6 +96,15 @@ DEBUG = os.environ.get('DEBUG', 'False') == 'True'
 ALLOWED_HOSTS_ENV = os.environ.get('ALLOWED_HOSTS', '')
 ALLOWED_HOSTS = [h.strip() for h in ALLOWED_HOSTS_ENV.split(',') if h.strip()] if ALLOWED_HOSTS_ENV else ['*']
 
+# CSRF para Railway (proxy HTTPS)
+CSRF_TRUSTED_ORIGINS = [
+    'https://*.railway.app',
+    'https://*.up.railway.app',
+]
+CSRF_ORIGINS_ENV = os.environ.get('CSRF_TRUSTED_ORIGINS', '')
+if CSRF_ORIGINS_ENV:
+    CSRF_TRUSTED_ORIGINS += [o.strip() for o in CSRF_ORIGINS_ENV.split(',') if o.strip()]
+
 
 # ── Aplicaciones ──────────────────────────────────────────────────
 INSTALLED_APPS = [
@@ -180,7 +189,7 @@ USE_TZ = True
 # ── Archivos estáticos ────────────────────────────────────────────
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
-STATICFILES_STORAGE = 'django.contrib.staticfiles.storage.StaticFilesStorage'
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
 
 # ── Media (archivos subidos) ──────────────────────────────────────
 MEDIA_URL = '/media/'
