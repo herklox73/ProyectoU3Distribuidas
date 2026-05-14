@@ -180,7 +180,7 @@ USE_TZ = True
 # ── Archivos estáticos ────────────────────────────────────────────
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
+STATICFILES_STORAGE = 'django.contrib.staticfiles.storage.StaticFilesStorage'
 
 # ── Media (archivos subidos) ──────────────────────────────────────
 MEDIA_URL = '/media/'
