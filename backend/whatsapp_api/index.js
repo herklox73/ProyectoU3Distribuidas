@@ -33,8 +33,8 @@ function createClient() {
                 '--disable-accelerated-2d-canvas',
                 '--no-first-run',
                 '--no-zygote',
-                '--disable-gpu',
-                '--disable-features=site-per-process'
+                '--single-process',
+                '--disable-gpu'
             ],
         }
     });
@@ -171,11 +171,8 @@ app.post('/api/send', async (req, res) => {
         const cleanNumber = number.replace(/[^0-9]/g, '');
         const formattedNumber = `${cleanNumber}@c.us`;
 
-        const exists = await numberExistsOnWhatsApp(formattedNumber);
-        if (!exists) {
-            console.log(`[WhatsApp] Numero ${cleanNumber} no existe en WhatsApp. Omitiendo.`);
-            return res.status(422).json({ success: false, error: `El numero ${cleanNumber} no tiene WhatsApp.` });
-        }
+        // No se hace isRegisteredUser() — era lento (30-60s) y causaba timeouts.
+        // Los números inválidos fallan con error 't: t' que ya se maneja abajo.
 
         let sentMsg;
 
