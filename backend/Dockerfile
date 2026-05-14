@@ -15,6 +15,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copiar código
 COPY . .
 
+# Recopilar archivos estáticos durante el BUILD (con clave dummy)
+ENV SECRET_KEY=dummy-collectstatic-key-not-used-in-production
+ENV DEBUG=False
+RUN python manage.py collectstatic --noinput
+
 # Puerto
 EXPOSE 8000
 
