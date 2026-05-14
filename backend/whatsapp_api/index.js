@@ -33,8 +33,8 @@ function createClient() {
                 '--disable-accelerated-2d-canvas',
                 '--no-first-run',
                 '--no-zygote',
-                '--single-process',
-                '--disable-gpu'
+                '--disable-gpu',
+                '--disable-features=site-per-process'
             ],
         }
     });
@@ -83,14 +83,13 @@ function createClient() {
         pairingCode = null;
         pairingPhone = null;
 
-        if (reason === 'LOGOUT') {
-            console.log('[WhatsApp] Logout detectado. Re-inicializando en 3 segundos...');
-            setTimeout(() => {
-                console.log('[WhatsApp] Re-inicializando cliente para nuevo QR...');
-                client = createClient();
-                client.initialize();
-            }, 3000);
-        }
+        console.log('[WhatsApp] Re-inicializando cliente en 5 segundos...');
+        setTimeout(() => {
+            console.log('[WhatsApp] Re-inicializando cliente...');
+            try { client.destroy(); } catch (_) {}
+            client = createClient();
+            client.initialize();
+        }, 5000);
     });
 
     // ─── Mensajes ENTRANTES → guardar en Django ───────────────────────
@@ -199,9 +198,22 @@ app.post('/api/send', async (req, res) => {
     } catch (err) {
         const errorMsg = err.message || String(err);
         const isInvalidNumber = errorMsg === 't: t' || errorMsg.includes('t: t');
+        const isDetachedFrame = errorMsg.includes('detached Frame') || errorMsg.includes('detached');
 
         if (isInvalidNumber) {
             return res.status(422).json({ success: false, error: 'Numero no tiene WhatsApp o es invalido.', code: 'INVALID_NUMBER' });
+        }
+
+        // Frame detachado = el navegador se cayó internamente → reiniciar cliente
+        if (isDetachedFrame) {
+            console.error('[WhatsApp] Frame detachado detectado. Reiniciando cliente en 3 segundos...');
+            isReady = false;
+            setTimeout(() => {
+                try { client.destroy(); } catch (_) {}
+                client = createClient();
+                client.initialize();
+            }, 3000);
+            return res.status(503).json({ success: false, error: 'WhatsApp se desconecto internamente. Reconectando...', code: 'DETACHED_FRAME' });
         }
 
         console.error(`[WhatsApp] Error enviando a ${req.body.number}:`, err.message || err);

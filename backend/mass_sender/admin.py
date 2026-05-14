@@ -34,7 +34,20 @@ class ContactAdmin(ModelAdmin):
     list_filter = ()
     list_per_page = 50
     change_list_template = 'mass_sender/admin_contact_changelist.html'
-    actions = ['limpiar_contactos_invalidos', 'marcar_activo', 'marcar_optout']
+    actions = ['limpiar_contactos_invalidos', 'marcar_activo', 'marcar_optout', 'eliminar_contactos_seleccionados']
+
+    def get_actions(self, request):
+        actions = super().get_actions(request)
+        # Quitar el delete_selected nativo de Django/Unfold que tiene una página de confirmación rota
+        if 'delete_selected' in actions:
+            del actions['delete_selected']
+        return actions
+
+    @admin.action(description='Eliminar contactos seleccionados')
+    def eliminar_contactos_seleccionados(self, request, queryset):
+        total = queryset.count()
+        queryset.delete()
+        self.message_user(request, f'✓ {total} contacto(s) eliminado(s) correctamente.', level=messages.SUCCESS)
 
     def get_queryset(self, request):
         qs = super().get_queryset(request).exclude(phone_number__contains='@')

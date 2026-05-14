@@ -176,3 +176,116 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 </script>
 {% endblock %}
+
+{% block content %}
+{{ block.super }}
+
+<!-- ── Modal de confirmación de eliminación ─────────────────────────── -->
+<div id="wpp-delete-overlay"
+     style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);
+            z-index:9998;align-items:center;justify-content:center;">
+    <div style="background:#fff;border-radius:16px;padding:36px 32px;max-width:430px;
+                width:92%;box-shadow:0 24px 64px rgba(0,0,0,.28);text-align:center;">
+        <div style="font-size:2.8rem;margin-bottom:14px;">🗑️</div>
+        <h3 style="margin:0 0 10px;font-size:1.15rem;font-weight:700;color:#111827;">
+            ¿Eliminar contactos?
+        </h3>
+        <p id="wpp-delete-msg"
+           style="color:#6b7280;font-size:0.88rem;margin:0 0 24px;line-height:1.55;">
+        </p>
+        <div style="display:flex;gap:10px;justify-content:center;">
+            <button id="wpp-cancel-btn" type="button"
+                    style="padding:10px 26px;border:1.5px solid #e5e7eb;background:#fff;
+                           border-radius:8px;font-weight:600;cursor:pointer;
+                           color:#374151;font-size:0.9rem;transition:background .15s;">
+                Cancelar
+            </button>
+            <button id="wpp-confirm-btn" type="button"
+                    style="padding:10px 26px;background:#ef4444;border:none;
+                           border-radius:8px;font-weight:700;color:#fff;
+                           cursor:pointer;font-size:0.9rem;transition:background .15s;">
+                Sí, eliminar
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- ── Spinner de procesamiento ────────────────────────────────────── -->
+<div id="wpp-spinner-overlay"
+     style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);
+            z-index:9999;align-items:center;justify-content:center;flex-direction:column;gap:18px;">
+    <div style="width:52px;height:52px;border:4px solid rgba(255,255,255,.25);
+                border-top-color:#fff;border-radius:50%;
+                animation:wpp-spin .75s linear infinite;"></div>
+    <p style="color:#fff;font-weight:600;font-size:1rem;margin:0;letter-spacing:.01em;">
+        Eliminando contactos…
+    </p>
+</div>
+
+<style>
+@keyframes wpp-spin { to { transform: rotate(360deg); } }
+#wpp-cancel-btn:hover { background:#f9fafb !important; }
+#wpp-confirm-btn:hover { background:#dc2626 !important; }
+</style>
+
+<script>
+(function () {
+    var overlay  = document.getElementById('wpp-delete-overlay');
+    var spinner  = document.getElementById('wpp-spinner-overlay');
+    var confirmB = document.getElementById('wpp-confirm-btn');
+    var cancelB  = document.getElementById('wpp-cancel-btn');
+    var pendingForm = null;
+
+    document.addEventListener('DOMContentLoaded', function () {
+        // Interceptar todos los formularios que tengan un select de acciones
+        document.querySelectorAll('form').forEach(function (form) {
+            form.addEventListener('submit', function (e) {
+                var sel = form.querySelector('select[name="action"]');
+                if (!sel) return;
+                if (sel.value !== 'eliminar_contactos_seleccionados') return;
+
+                e.preventDefault();
+                pendingForm = form;
+
+                // Contar seleccionados
+                var checked = form.querySelectorAll('input[name="_selected_action"]:checked');
+                var count   = checked.length;
+
+                var msg = document.getElementById('wpp-delete-msg');
+                if (count === 0) {
+                    msg.textContent = 'Se eliminarán permanentemente los contactos seleccionados. Esta acción no se puede deshacer.';
+                } else {
+                    msg.textContent = 'Se eliminarán permanentemente ' + count +
+                        ' contacto' + (count === 1 ? '' : 's') +
+                        '. Esta acción no se puede deshacer.';
+                }
+                overlay.style.display = 'flex';
+            });
+        });
+
+        // Confirmar → mostrar spinner y enviar
+        confirmB.addEventListener('click', function () {
+            if (!pendingForm) return;
+            overlay.style.display = 'none';
+            spinner.style.display = 'flex';
+            pendingForm.submit();
+        });
+
+        // Cancelar
+        cancelB.addEventListener('click', function () {
+            overlay.style.display = 'none';
+            pendingForm = null;
+        });
+
+        // Cerrar al hacer clic fuera del modal
+        overlay.addEventListener('click', function (e) {
+            if (e.target === overlay) {
+                overlay.style.display = 'none';
+                pendingForm = null;
+            }
+        });
+    });
+})();
+</script>
+
+{% endblock %}
