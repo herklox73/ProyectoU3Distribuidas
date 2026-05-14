@@ -1,3 +1,9 @@
+// Polyfill crypto para Node.js < 19 (requerido por Baileys)
+if (typeof globalThis.crypto === 'undefined') {
+    const { webcrypto } = require('crypto');
+    globalThis.crypto = webcrypto;
+}
+
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const express = require('express');
