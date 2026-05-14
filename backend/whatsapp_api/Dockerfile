@@ -2,6 +2,7 @@ FROM node:18-slim
 
 # Instalar Chromium y todas sus dependencias del sistema
 RUN apt-get update && apt-get install -y \
+    git \
     chromium \
     libnss3 \
     libfreetype6 \
