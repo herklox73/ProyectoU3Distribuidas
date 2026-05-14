@@ -79,13 +79,16 @@ function createClient() {
     c.on('disconnected', (reason) => {
         console.log('[WhatsApp] Desconectado:', reason);
         isReady = false;
-        currentQR = null;
         pairingCode = null;
         pairingPhone = null;
+        // NO limpiar currentQR aquí — mantener el último QR visible
+        // para que el admin pueda mostrarlo mientras el cliente reinicia.
+        // Se limpiará justo antes de que el nuevo cliente arranque.
 
         console.log('[WhatsApp] Re-inicializando cliente en 5 segundos...');
         setTimeout(() => {
             console.log('[WhatsApp] Re-inicializando cliente...');
+            currentQR = null; // limpiar QR justo antes del reinicio
             try { client.destroy(); } catch (_) {}
             client = createClient();
             client.initialize();
