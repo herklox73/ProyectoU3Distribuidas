@@ -15,10 +15,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copiar código
 COPY . .
 
-# Recopilar archivos estáticos durante el BUILD (con clave dummy)
+# Variables dummy para el BUILD (Railway inyecta las reales en runtime)
 ENV SECRET_KEY=dummy-collectstatic-key-not-used-in-production
 ENV DEBUG=False
+ENV DJANGO_SUPERUSER_USERNAME=admin
+ENV DJANGO_SUPERUSER_PASSWORD=Admin1234!
+ENV DJANGO_SUPERUSER_EMAIL=admin@example.com
+
+# Ejecutar en build: static files + migraciones + superusuario inicial
 RUN python manage.py collectstatic --noinput
+RUN python manage.py migrate --noinput
+RUN python manage.py createsuperuser --noinput || true
 
 # Puerto
 EXPOSE 8000
