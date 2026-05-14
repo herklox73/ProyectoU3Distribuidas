@@ -7,6 +7,11 @@ from .models import ApiProvider, Contact, Campaign, Message, CampaignProgress
 from .forms import ContactAdminForm
 import requests
 import threading
+from django.conf import settings
+
+def _whatsapp_url(path):
+    base = getattr(settings, 'WHATSAPP_API_URL', 'http://localhost:3001').rstrip('/')
+    return f"{base}{path}"
 import time
 import base64
 import mimetypes
@@ -617,7 +622,7 @@ def _send_campaign_background(campaign_id, contact_ids):
                 wpp_msg_id      = None
                 try:
                     payload = {"number": contact.phone_number, "message": mensaje_final, **media_payload}
-                    res = requests.post('http://localhost:3001/api/send', json=payload, timeout=30)
+                    res = requests.post(_whatsapp_url('/api/send'), json=payload, timeout=30)
 
                     if res.status_code == 200:
                         delivery_status = 'sent'

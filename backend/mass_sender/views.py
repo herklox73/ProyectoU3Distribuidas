@@ -6,6 +6,7 @@ from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib import messages as django_messages, admin
 from django.utils import timezone
 from django.db.models import Count, Q
+from django.conf import settings
 import json
 import re
 import requests
@@ -13,6 +14,11 @@ import csv
 import io
 from datetime import datetime, timedelta
 from .models import Contact, Message, ApiProvider
+
+def _whatsapp_url(path):
+    """Devuelve la URL completa del servicio WhatsApp API."""
+    base = getattr(settings, 'WHATSAPP_API_URL', 'http://localhost:3001').rstrip('/')
+    return f"{base}{path}"
 
 
 def normalizar_telefono(raw):
@@ -169,7 +175,7 @@ def api_enviar_whatsapp(request):
             # Enviar a Node.js y guardar el ID de WhatsApp para los ticks
             try:
                 node_resp = requests.post(
-                    'http://localhost:3001/api/send',
+                    _whatsapp_url('/api/send'),
                     json={"number": numero, "message": mensaje},
                     timeout=20          # timeout más holgado para validación del número
                 ).json()
@@ -299,7 +305,7 @@ def api_cambiar_numero(request):
     """Cierra la sesión de WhatsApp en Node.js."""
     if request.method == 'POST':
         try:
-            requests.post('http://localhost:3001/api/logout', timeout=10)
+            requests.post(_whatsapp_url('/api/logout'), timeout=10)
             return JsonResponse({"success": True})
         except Exception as e:
             return JsonResponse({"success": False, "error": str(e)})
@@ -309,7 +315,7 @@ def api_cambiar_numero(request):
 def api_qr_status(request):
     """Proxy: devuelve el QR y/o código de vinculación desde Node.js."""
     try:
-        resp = requests.get('http://localhost:3001/api/qr', timeout=5)
+        resp = requests.get(_whatsapp_url('/api/qr'), timeout=5)
         data = resp.json()
         return JsonResponse(data)
     except Exception:
@@ -326,7 +332,7 @@ def api_request_pairing(request):
             if not phone:
                 return JsonResponse({"success": False, "error": "Falta el número de teléfono"})
             resp = requests.post(
-                'http://localhost:3001/api/request-pairing',
+                _whatsapp_url('/api/request-pairing'),
                 json={"phone": phone},
                 timeout=15
             )
@@ -343,7 +349,7 @@ def cambiar_numero_admin_view(request):
 
     # Estado actual
     try:
-        status_resp = requests.get('http://localhost:3001/api/status', timeout=3)
+        status_resp = requests.get(_whatsapp_url('/api/status'), timeout=3)
         context['wa_connected'] = status_resp.json().get('ready', False)
     except Exception:
         context['wa_connected'] = False
