@@ -11,11 +11,43 @@ const cors = require('cors');
 const qrcode = require('qrcode-terminal');
 const P = require('pino');
 const fs = require('fs');
+const http = require('http');
+const { WebSocketServer } = require('ws');
 
 const app = express();
 app.use(express.json({ limit: '600mb' }));
 app.use(express.urlencoded({ limit: '600mb', extended: true }));
 app.use(cors());
+
+// ─── Servidor HTTP + WebSocket (mismo puerto) ─────────────────────────
+// Separación de responsabilidades: el servidor HTTP sirve la API REST,
+// el WebSocketServer emite eventos en tiempo real (push) a los clientes React.
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server });
+
+// Broadcast: envía un mensaje a TODOS los clientes React conectados.
+// Principio SRP: esta función solo tiene una responsabilidad — difundir eventos.
+function broadcast(event, data) {
+    const payload = JSON.stringify({ event, data, ts: Date.now() });
+    wss.clients.forEach(client => {
+        if (client.readyState === 1) { // 1 = OPEN
+            client.send(payload);
+        }
+    });
+}
+
+wss.on('connection', (ws) => {
+    console.log('[WS] Cliente React conectado. Total:', wss.clients.size);
+    // Enviar estado actual al cliente recién conectado
+    ws.send(JSON.stringify({
+        event: 'status',
+        data: { ready: isReady, has_qr: currentQR !== null, has_pairing: pairingCode !== null },
+        ts: Date.now()
+    }));
+    ws.on('close', () => {
+        console.log('[WS] Cliente React desconectado. Total:', wss.clients.size);
+    });
+});
 
 // ─── Estado global ────────────────────────────────────────────────────
 let isReady = false;
@@ -90,6 +122,8 @@ async function startClient() {
                 console.log('ESCANEA ESTE CODIGO QR CON TU WHATSAPP');
                 console.log('====================================================');
                 qrcode.generate(qr, { small: true });
+                // Notificar a React via WebSocket: nuevo QR disponible
+                broadcast('qr_update', { qr, ready: false });
 
                 if (pairingPhone) {
                     try {
@@ -131,6 +165,8 @@ async function startClient() {
                 pairingCode = null;
                 pairingPhone = null;
                 console.log('[WhatsApp] Conectado exitosamente. Sistema listo.');
+                // Notificar a React via WebSocket: WhatsApp conectado
+                broadcast('wa_connected', { ready: true });
             }
         });
 
@@ -151,6 +187,9 @@ async function startClient() {
 
                 console.log(`[WhatsApp] Mensaje entrante de ${number}: ${body.substring(0, 60)}`);
                 await notifyDjango('/whatsapp/api/webhook/', { from: number, body, type: 'chat' });
+                // Notificar a React via WebSocket: nuevo mensaje entrante (push instantáneo)
+                // Esto reemplaza el polling cada 3s por un evento puntual y eficiente
+                broadcast('new_message', { from: number, body, direction: 'inbound' });
             }
         });
 
@@ -173,6 +212,8 @@ async function startClient() {
                     wpp_message_id: update.key.id || null,
                     number, status, ack: statusNum
                 });
+                // Notificar a React: estado del mensaje actualizado (ticks)
+                broadcast('message_ack', { wpp_message_id: update.key.id, number, status });
             }
         });
 
@@ -241,6 +282,8 @@ async function processSendQueue() {
             await notifyDjango('/whatsapp/api/send-result/', {
                 number: cleanNumber, status: 'sent', wpp_message_id: wppId
             });
+            // Push a React: mensaje de campaña enviado exitosamente
+            broadcast('campaign_msg_sent', { number: cleanNumber, status: 'sent', wpp_message_id: wppId });
 
         } catch (err) {
             const errorMsg = err.message || String(err);
@@ -337,7 +380,11 @@ app.post('/api/logout', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[WhatsApp] API corriendo en http://0.0.0.0:${PORT}`);
+// Usar server.listen en lugar de app.listen para que HTTP y WebSocket
+// compartan el mismo puerto — el servidor HTTP despacha las peticiones REST
+// y el WebSocketServer maneja las conexiones WS en el mismo proceso.
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`[WhatsApp] API REST + WebSocket corriendo en http://0.0.0.0:${PORT}`);
+    console.log(`[WhatsApp] WebSocket disponible en ws://0.0.0.0:${PORT}`);
     console.log('[WhatsApp] Iniciando WhatsApp (Baileys)...');
 });

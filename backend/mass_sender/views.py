@@ -4,7 +4,10 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.clickjacking import xframe_options_exempt
 from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib import messages as django_messages, admin
+from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth.decorators import login_required
 from django.utils import timezone
+from django.db import transaction
 from django.db.models import Count, Q
 from django.conf import settings
 import json
@@ -12,8 +15,10 @@ import re
 import requests
 import csv
 import io
+import threading
 from datetime import datetime, timedelta
-from .models import Contact, Message, ApiProvider
+from .models import Contact, Message, ApiProvider, Campaign, CampaignProgress
+from .services import default_message_service
 
 def _whatsapp_url(path):
     """Devuelve la URL completa del servicio WhatsApp API."""
@@ -154,70 +159,67 @@ def api_leer_mensajes(request):
 
 @csrf_exempt
 def api_enviar_whatsapp(request):
+    """
+    Vista: recibe la petición HTTP y delega la lógica al servicio.
+    Principio SRP: la vista NO sabe cómo se envía el mensaje, solo coordina.
+    Principio D: depende de default_message_service (abstracción), no de requests.post.
+
+    CONSISTENCIA TRANSACCIONAL:
+    La lógica atómica está en MessageService.enviar_mensaje(), decorada con
+    @transaction.atomic. Si el proceso falla a mitad, Django hace rollback.
+    """
     if request.method == 'POST':
         try:
-            data = json.loads(request.body)
+            data   = json.loads(request.body)
             numero = data.get('to')
             mensaje = data.get('message')
-            
-            # Buscar contacto
-            contact = Contact.objects.filter(phone_number__icontains=numero).first()
-            if not contact:
-                contact = Contact.objects.create(phone_number=numero, full_name=numero)
-                
-            # Guardar en DB
-            msg_obj = Message.objects.create(
-                phone_number=numero,
-                content=mensaje,
-                direction='outbound'
-            )
-            
-            # Enviar a Node.js y guardar el ID de WhatsApp para los ticks
-            try:
-                node_resp = requests.post(
-                    _whatsapp_url('/api/send'),
-                    json={"number": numero, "message": mensaje},
-                    timeout=20          # timeout más holgado para validación del número
-                ).json()
-                wpp_id = node_resp.get('wpp_message_id') or ''
-                # Siempre guardar: con o sin wpp_message_id
-                msg_obj.delivery_status = 'sent'
-                if wpp_id:
-                    msg_obj.wpp_message_id = wpp_id
-                msg_obj.save()
-            except Exception as e:
-                print("Error de Node API:", e)
-                # Marcar como sent de todas formas para que aparezca el tick
-                msg_obj.delivery_status = 'sent'
-                msg_obj.save()
 
-            return JsonResponse({"success": True, "texto_enviado": mensaje})
+            if not numero or not mensaje:
+                return JsonResponse({"success": False, "error": {"message": "Faltan parámetros"}})
+
+            # Delegar al servicio — vista queda limpia y testeable
+            resultado = default_message_service.enviar_mensaje(numero, mensaje)
+            return JsonResponse(resultado)
+
         except Exception as e:
             return JsonResponse({"success": False, "error": {"message": str(e)}})
     return JsonResponse({"success": False})
 
 @csrf_exempt
 def api_webhook(request):
+    """
+    Recibe mensajes entrantes desde Node.js.
+
+    CONSISTENCIA TRANSACCIONAL con @transaction.atomic:
+    El contacto y el mensaje se crean en una sola transacción.
+    Si falla la creación del mensaje, el contacto tampoco se crea
+    (o viceversa) — no quedan registros huérfanos.
+
+    CONCURRENCIA: si dos mensajes del mismo número llegan simultáneamente,
+    get_or_create usa SELECT + INSERT atómico — el ORM garantiza que no
+    se creen dos contactos con el mismo número (unique constraint).
+    """
     if request.method == 'POST':
         try:
-            data = json.loads(request.body)
+            data   = json.loads(request.body)
             numero = data.get('from')
             mensaje = data.get('body')
 
-            # Ignorar JIDs internos de WhatsApp (@lid, @g.us, @newsletter, etc.)
             if not numero or '@' in str(numero):
                 return JsonResponse({"success": True, "skipped": True})
 
             if numero and mensaje:
-                contact = Contact.objects.filter(phone_number__icontains=numero).first()
-                if not contact:
-                    contact = Contact.objects.create(phone_number=numero, full_name=numero)
-
-                Message.objects.create(
-                    phone_number=numero,
-                    content=mensaje,
-                    direction='inbound'
-                )
+                with transaction.atomic():
+                    # get_or_create es atómico: no produce duplicados bajo concurrencia
+                    contact, _ = Contact.objects.get_or_create(
+                        phone_number=numero,
+                        defaults={'full_name': numero}
+                    )
+                    Message.objects.create(
+                        phone_number=numero,
+                        content=mensaje,
+                        direction='inbound'
+                    )
             return JsonResponse({"success": True})
         except Exception as e:
             return JsonResponse({"success": False, "error": str(e)})
@@ -722,4 +724,401 @@ def campaign_monitor_view(request, campaign_id):
         'title': f'Monitor — {campaign.name}',
         'campaign_id': campaign_id,
         'campaign_name': campaign.name,
+    })
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# API REST PARA REACT — sin interfaz Django, solo JSON
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── Autenticación ────────────────────────────────────────────────────────
+
+@csrf_exempt
+def api_login(request):
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'Método no permitido'}, status=405)
+    try:
+        data = json.loads(request.body)
+        username = data.get('username', '').strip()
+        password = data.get('password', '').strip()
+        user = authenticate(request, username=username, password=password)
+        if user:
+            login(request, user)
+            return JsonResponse({
+                'success': True,
+                'user': {'username': user.username, 'email': user.email}
+            })
+        return JsonResponse({'success': False, 'error': 'Credenciales incorrectas'}, status=401)
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=500)
+
+
+@csrf_exempt
+def api_logout(request):
+    logout(request)
+    return JsonResponse({'success': True})
+
+
+def api_me(request):
+    if request.user.is_authenticated:
+        return JsonResponse({
+            'authenticated': True,
+            'user': {'username': request.user.username, 'email': request.user.email}
+        })
+    return JsonResponse({'authenticated': False}, status=401)
+
+
+# ── Campañas ─────────────────────────────────────────────────────────────
+
+@csrf_exempt
+def api_campanas_list(request):
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'No autenticado'}, status=401)
+
+    if request.method == 'GET':
+        campanas = Campaign.objects.all().order_by('-created_at')
+        data = []
+        for c in campanas:
+            try:
+                p = c.progress
+                progreso = {
+                    'total': p.total, 'sent': p.sent, 'failed': p.failed,
+                    'is_running': p.is_running,
+                    'percent': int((p.sent + p.failed) / p.total * 100) if p.total > 0 else 0
+                }
+            except CampaignProgress.DoesNotExist:
+                progreso = {'total': 0, 'sent': 0, 'failed': 0, 'is_running': False, 'percent': 0}
+
+            data.append({
+                'id': c.id,
+                'nombre': c.name,
+                'status': c.status,
+                'mensaje': c.message_template[:80] + '...' if len(c.message_template) > 80 else c.message_template,
+                'target_tags': c.target_tags or '',
+                'scheduled_at': c.scheduled_at.isoformat() if c.scheduled_at else None,
+                'created_at': c.created_at.strftime('%d/%m/%Y %H:%M'),
+                'progreso': progreso,
+            })
+        return JsonResponse({'campanas': data})
+
+    if request.method == 'POST':
+        try:
+            # Soporta tanto JSON como multipart/form-data (para subir archivos)
+            ct = request.content_type or ''
+            if 'multipart' in ct or 'form' in ct:
+                data = request.POST
+                media_file = request.FILES.get('media_file')
+            else:
+                data = json.loads(request.body)
+                media_file = None
+            with transaction.atomic():
+                campana = Campaign.objects.create(
+                    name=data.get('nombre', '').strip(),
+                    message_template=data.get('mensaje', '').strip(),
+                    target_tags=data.get('target_tags', '').strip() or None,
+                    media_url=data.get('media_url', '').strip() or None,
+                    status='draft',
+                )
+                if media_file:
+                    campana.media_file = media_file
+                    campana.save()
+            return JsonResponse({'success': True, 'id': campana.id}, status=201)
+        except Exception as e:
+            return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+    return JsonResponse({'error': 'Método no permitido'}, status=405)
+
+
+@csrf_exempt
+def api_campanas_detail(request, pk):
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'No autenticado'}, status=401)
+    try:
+        campana = Campaign.objects.get(pk=pk)
+    except Campaign.DoesNotExist:
+        return JsonResponse({'error': 'No encontrada'}, status=404)
+
+    if request.method == 'GET':
+        # media_effective: archivo subido tiene prioridad sobre URL manual
+        media_effective = ''
+        media_file_name = ''
+        if campana.media_file:
+            try:
+                media_effective = request.build_absolute_uri(campana.media_file.url)
+                media_file_name = campana.media_file.name.split('/')[-1]
+            except Exception:
+                pass
+        elif campana.media_url:
+            media_effective = campana.media_url
+        return JsonResponse({
+            'id': campana.id,
+            'nombre': campana.name,
+            'mensaje': campana.message_template,
+            'status': campana.status,
+            'target_tags': campana.target_tags or '',
+            'media_url': campana.media_url or '',
+            'media_file_url': media_effective,
+            'media_file_name': media_file_name,
+            'scheduled_at': campana.scheduled_at.isoformat() if campana.scheduled_at else None,
+            'created_at': campana.created_at.strftime('%d/%m/%Y %H:%M'),
+        })
+
+    if request.method == 'PUT':
+        try:
+            ct = request.content_type or ''
+            if 'multipart' in ct or 'form' in ct:
+                # Django no parsea request.POST/FILES en PUT — usar MultiPartParser
+                from django.http.multipartparser import MultiPartParser as _MP
+                _data, _files = _MP(request.META, request, request.upload_handlers).parse()
+                media_file = _files.get('media_file')
+            else:
+                _data = json.loads(request.body)
+                media_file = None
+
+            def _get(key, default):
+                v = _data.get(key)
+                return v if v is not None else default
+
+            with transaction.atomic():
+                campana.name             = _get('nombre',      campana.name)
+                campana.message_template = _get('mensaje',     campana.message_template)
+                campana.target_tags      = _get('target_tags', campana.target_tags) or None
+                campana.media_url        = _get('media_url',   campana.media_url)   or None
+                if media_file:
+                    campana.media_file = media_file
+                campana.save()
+            return JsonResponse({'success': True})
+        except Exception as e:
+            return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+    if request.method == 'DELETE':
+        with transaction.atomic():
+            campana.delete()
+        return JsonResponse({'success': True})
+
+    return JsonResponse({'error': 'Método no permitido'}, status=405)
+
+
+@csrf_exempt
+def api_campanas_ejecutar(request, pk):
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'No autenticado'}, status=401)
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Método no permitido'}, status=405)
+
+    try:
+        from .admin import _send_campaign_background, get_campaign_lock
+        import os
+
+        campana = Campaign.objects.get(pk=pk)
+
+        if campana.status == 'running':
+            return JsonResponse({'success': False, 'error': 'La campaña ya está en ejecución'})
+
+        qs = Contact.objects.filter(is_opted_out=False).exclude(phone_number__contains='@')
+        if campana.target_tags:
+            qs = qs.filter(tags__icontains=campana.target_tags.strip())
+
+        contact_ids = list(qs.values_list('id', flat=True))
+        if not contact_ids:
+            return JsonResponse({'success': False, 'error': 'No hay contactos activos para esta campaña'})
+
+        campaign_lock = get_campaign_lock(campana.id)
+        if not campaign_lock.acquire(blocking=False):
+            return JsonResponse({'success': False, 'error': 'La campaña ya está siendo ejecutada'})
+
+        def hilo_target(cid, cids, lock):
+            try:
+                _send_campaign_background(cid, cids)
+            finally:
+                lock.release()
+
+        hilo = threading.Thread(
+            target=hilo_target,
+            args=(campana.id, contact_ids, campaign_lock),
+            daemon=True,
+            name=f'Campaign-{campana.id}'
+        )
+        hilo.start()
+
+        return JsonResponse({
+            'success': True,
+            'message': f'Campaña iniciada para {len(contact_ids)} contactos'
+        })
+    except Campaign.DoesNotExist:
+        return JsonResponse({'error': 'Campaña no encontrada'}, status=404)
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=500)
+
+
+# ── Contactos ─────────────────────────────────────────────────────────────
+
+@csrf_exempt
+def api_contactos_list(request):
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'No autenticado'}, status=401)
+
+    if request.method == 'GET':
+        busqueda = request.GET.get('q', '')
+        tag = request.GET.get('tag', '')
+        estado = request.GET.get('estado', '')
+        page = int(request.GET.get('page', 1))
+        per_page = 50
+
+        qs = Contact.objects.exclude(phone_number__contains='@').order_by('-created_at')
+        if busqueda:
+            qs = qs.filter(Q(phone_number__icontains=busqueda) | Q(full_name__icontains=busqueda))
+        if tag:
+            qs = qs.filter(tags__icontains=tag)
+        if estado == 'activo':
+            qs = qs.filter(is_opted_out=False)
+        elif estado == 'optout':
+            qs = qs.filter(is_opted_out=True)
+
+        total = qs.count()
+        contactos = qs[(page - 1) * per_page: page * per_page]
+
+        # Obtener etiquetas únicas para los filtros
+        all_tags_raw = Contact.objects.exclude(tags__isnull=True).exclude(tags='').values_list('tags', flat=True)
+        tags_set = set()
+        for t in all_tags_raw:
+            for part in t.split(','):
+                clean = part.strip()
+                if clean:
+                    tags_set.add(clean)
+
+        return JsonResponse({
+            'contactos': [{
+                'id': c.id,
+                'telefono': c.phone_number,
+                'nombre': c.full_name or '',
+                'tags': c.tags or '',
+                'is_opted_out': c.is_opted_out,
+                'created_at': c.created_at.strftime('%d/%m/%Y'),
+            } for c in contactos],
+            'total': total,
+            'page': page,
+            'pages': (total + per_page - 1) // per_page,
+            'tags_disponibles': sorted(tags_set),
+        })
+
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body)
+            telefono = data.get('telefono', '').strip()
+            if not telefono:
+                return JsonResponse({'success': False, 'error': 'El teléfono es requerido'}, status=400)
+            with transaction.atomic():
+                contact, created = Contact.objects.update_or_create(
+                    phone_number=telefono,
+                    defaults={
+                        'full_name': data.get('nombre', '').strip() or telefono,
+                        'tags': data.get('tags', '').strip() or None,
+                    }
+                )
+            return JsonResponse({'success': True, 'id': contact.id, 'created': created}, status=201)
+        except Exception as e:
+            return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+    return JsonResponse({'error': 'Método no permitido'}, status=405)
+
+
+@csrf_exempt
+def api_contactos_detail(request, pk):
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'No autenticado'}, status=401)
+    try:
+        contacto = Contact.objects.get(pk=pk)
+    except Contact.DoesNotExist:
+        return JsonResponse({'error': 'No encontrado'}, status=404)
+
+    if request.method == 'PUT':
+        try:
+            data = json.loads(request.body)
+            with transaction.atomic():
+                contacto.full_name = data.get('nombre', contacto.full_name)
+                contacto.tags = data.get('tags', contacto.tags) or None
+                contacto.is_opted_out = data.get('is_opted_out', contacto.is_opted_out)
+                contacto.save()
+            return JsonResponse({'success': True})
+        except Exception as e:
+            return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+    if request.method == 'DELETE':
+        with transaction.atomic():
+            contacto.delete()
+        return JsonResponse({'success': True})
+
+    return JsonResponse({'error': 'Método no permitido'}, status=405)
+
+
+@csrf_exempt
+def api_contactos_bulk_delete(request):
+    """Elimina múltiples contactos por lista de IDs."""
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'No autenticado'}, status=401)
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Método no permitido'}, status=405)
+    try:
+        data = json.loads(request.body)
+        ids = data.get('ids', [])
+        if not ids:
+            return JsonResponse({'error': 'No se enviaron IDs'}, status=400)
+        deleted, _ = Contact.objects.filter(id__in=ids).delete()
+        return JsonResponse({'success': True, 'eliminados': deleted})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=500)
+
+
+@csrf_exempt
+def api_contactos_importar(request):
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'No autenticado'}, status=401)
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Método no permitido'}, status=405)
+    try:
+        data = json.loads(request.body)
+        contactos = data.get('contactos', [])
+        resultado = default_message_service.__class__
+        from .services import ContactService
+        resultado = ContactService.importar_lote(contactos)
+        return JsonResponse({'success': True, **resultado})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=500)
+
+
+# ── Mensajes ──────────────────────────────────────────────────────────────
+
+def api_mensajes_list(request):
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'No autenticado'}, status=401)
+
+    page = int(request.GET.get('page', 1))
+    per_page = 50
+    busqueda = request.GET.get('q', '')
+    direccion = request.GET.get('direccion', '')
+
+    qs = Message.objects.exclude(phone_number__contains='@').order_by('-sent_at')
+    if busqueda:
+        qs = qs.filter(Q(phone_number__icontains=busqueda) | Q(content__icontains=busqueda))
+    if direccion:
+        qs = qs.filter(direction=direccion)
+
+    total = qs.count()
+    mensajes = qs[(page - 1) * per_page: page * per_page]
+
+    return JsonResponse({
+        'mensajes': [{
+            'id': m.id,
+            'telefono': m.phone_number,
+            'nombre': Contact.objects.filter(phone_number=m.phone_number).values_list('full_name', flat=True).first() or m.phone_number,
+            'contenido': m.content[:100] if m.content else '',
+            'direccion': m.direction,
+            'status': m.delivery_status,
+            'campana': m.campaign.name if m.campaign else '',
+            'fecha': m.sent_at.strftime('%d/%m/%Y %H:%M') if m.sent_at else '',
+        } for m in mensajes],
+        'total': total,
+        'page': page,
+        'pages': (total + per_page - 1) // per_page,
     })

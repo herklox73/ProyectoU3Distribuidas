@@ -4,10 +4,10 @@ from . import views
 app_name = 'mass_sender'
 
 urlpatterns = [
+    # ── Chat ──────────────────────────────────────────────────────────────
     path('chat/', views.chat_view, name='chat'),
     path('chat/leer_mensajes.php', views.api_leer_mensajes, name='api_leer_mensajes'),
     path('chat/enviar_whatsapp.php', views.api_enviar_whatsapp, name='api_enviar_whatsapp'),
-    path('api/webhook/', views.api_webhook, name='api_webhook'),
     path('chat/get_whatsapp_profile.php', views.dummy_success),
     path('chat/eliminar_contacto.php', views.dummy_success),
     path('chat/disconnect_whatsapp.php', views.dummy_success),
@@ -17,21 +17,46 @@ urlpatterns = [
     path('chat/enviar_audio_whatsapp.php', views.dummy_success),
     path('chat/enviar_documento_whatsapp.php', views.dummy_success),
     path('chat/eliminar_chat.php', views.dummy_success),
-    path('import-contacts/', views.import_contacts, name='import_contacts'),
+
+    # ── Webhooks y ACKs (llamados por Node.js) ────────────────────────────
+    path('api/webhook/', views.api_webhook, name='api_webhook'),
+    path('api/message-ack/', views.api_message_ack, name='api_message_ack'),
+    path('api/send-result/', views.api_send_result, name='api_send_result'),
+
+    # ── WhatsApp conexión ─────────────────────────────────────────────────
+    path('api/qr-status/', views.api_qr_status, name='api_qr_status'),
+    path('api/cambiar-numero/', views.api_cambiar_numero, name='api_cambiar_numero'),
+    path('api/request-pairing/', views.api_request_pairing, name='api_request_pairing'),
+
+    # ── Reportes ──────────────────────────────────────────────────────────
     path('api/reportes/', views.api_reportes, name='api_reportes'),
     path('reportes/', views.reportes_view, name='reportes'),
-    # Progreso de campaña en tiempo real
+
+    # ── Progreso campaña ──────────────────────────────────────────────────
     path('api/campaign-progress/<int:campaign_id>/', views.api_campaign_progress, name='api_campaign_progress'),
-    # Monitor en tiempo real
     path('monitor/<int:campaign_id>/', views.campaign_monitor_view, name='campaign_monitor'),
-    # ACK de entrega/lectura (llamado por Node.js)
-    path('api/message-ack/', views.api_message_ack, name='api_message_ack'),
-    # Resultado real del envío desde la cola de Node.js
-    path('api/send-result/', views.api_send_result, name='api_send_result'),
-    # Cambiar número de WhatsApp (cerrar sesión en Node.js)
-    path('api/cambiar-numero/', views.api_cambiar_numero, name='api_cambiar_numero'),
-    # Proxy: devuelve QR actual desde Node.js
-    path('api/qr-status/', views.api_qr_status, name='api_qr_status'),
-    # Solicitar código de vinculación por número de teléfono
-    path('api/request-pairing/', views.api_request_pairing, name='api_request_pairing'),
+
+    # ── Importar contactos (admin Django) ─────────────────────────────────
+    path('import-contacts/', views.import_contacts, name='import_contacts'),
+
+    # ── API REST para React ───────────────────────────────────────────────
+
+    # Autenticación
+    path('api/auth/login/', views.api_login, name='api_login'),
+    path('api/auth/logout/', views.api_logout, name='api_logout'),
+    path('api/auth/me/', views.api_me, name='api_me'),
+
+    # Campañas
+    path('api/campanas/', views.api_campanas_list, name='api_campanas_list'),
+    path('api/campanas/<int:pk>/', views.api_campanas_detail, name='api_campanas_detail'),
+    path('api/campanas/<int:pk>/ejecutar/', views.api_campanas_ejecutar, name='api_campanas_ejecutar'),
+
+    # Contactos
+    path('api/contactos/', views.api_contactos_list, name='api_contactos_list'),
+    path('api/contactos/importar/', views.api_contactos_importar, name='api_contactos_importar'),
+    path('api/contactos/bulk-delete/', views.api_contactos_bulk_delete, name='api_contactos_bulk_delete'),
+    path('api/contactos/<int:pk>/', views.api_contactos_detail, name='api_contactos_detail'),
+
+    # Mensajes
+    path('api/mensajes/', views.api_mensajes_list, name='api_mensajes_list'),
 ]

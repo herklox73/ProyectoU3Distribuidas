@@ -9,6 +9,25 @@ import requests
 import threading
 from django.conf import settings
 
+# ─── Lock de concurrencia ─────────────────────────────────────────────────────
+# CONCEPTO: Concurrencia con hilos
+# threading.Lock() garantiza que solo UN hilo a la vez puede lanzar campañas.
+# Sin esto, si dos usuarios del admin hacen click en "Ejecutar campaña"
+# al mismo tiempo, podrían crearse dos hilos enviando al mismo contacto.
+#
+# _campaign_locks: diccionario {campaign_id → Lock} para un lock por campaña.
+# Así dos campañas DIFERENTES pueden correr en paralelo sin bloquearse entre sí.
+import threading
+_campaign_locks: dict = {}
+_locks_mutex = threading.Lock()  # protege el diccionario de locks
+
+def get_campaign_lock(campaign_id: int) -> threading.Lock:
+    """Devuelve (o crea) el Lock para una campaña específica."""
+    with _locks_mutex:
+        if campaign_id not in _campaign_locks:
+            _campaign_locks[campaign_id] = threading.Lock()
+        return _campaign_locks[campaign_id]
+
 def _whatsapp_url(path):
     base = getattr(settings, 'WHATSAPP_API_URL', 'http://localhost:3001').rstrip('/')
     return f"{base}{path}"
@@ -24,6 +43,7 @@ from django.utils import timezone
 class ApiProviderAdmin(ModelAdmin):
     list_display = ('business_name', 'display_number', 'phone_number_id', 'is_active', 'created_at')
     search_fields = ('business_name', 'phone_number_id', 'display_number')
+    search_help_text = 'Buscar por nombre, número o ID del proveedor'
 
 
 @admin.register(Contact)
@@ -708,7 +728,8 @@ def _send_campaign_background(campaign_id, contact_ids):
 class CampaignAdmin(ModelAdmin):
     list_display = ('name', 'status', 'scheduled_at', 'created_at', 'progreso_display')
     search_fields = ('name',)
-    list_filter = ('status',)
+    search_help_text = 'Buscar campaña por nombre'
+    list_filter = ()
     readonly_fields = ('created_at', 'progreso_info')
     actions = ['execute_campaign_async']
 
@@ -837,10 +858,30 @@ class CampaignAdmin(ModelAdmin):
                 )
                 continue
 
+            # ── CONCURRENCIA: verificar con lock antes de lanzar el hilo ──
+            # Si dos admins intentan lanzar la misma campaña simultáneamente,
+            # el segundo intento no_wait (blocking=False) falla sin bloquearse.
+            campaign_lock = get_campaign_lock(campaign.id)
+            if not campaign_lock.acquire(blocking=False):
+                self.message_user(
+                    request,
+                    f"La campaña '{campaign.name}' ya está siendo lanzada por otro usuario.",
+                    level=messages.WARNING
+                )
+                continue
+
+            # El hilo libera el lock cuando termina el envío
+            def hilo_target(cid, cids, lock):
+                try:
+                    _send_campaign_background(cid, cids)
+                finally:
+                    lock.release()  # siempre liberar, incluso si hay error
+
             hilo = threading.Thread(
-                target=_send_campaign_background,
-                args=(campaign.id, contacts),
-                daemon=True
+                target=hilo_target,
+                args=(campaign.id, contacts, campaign_lock),
+                daemon=True,
+                name=f'Campaign-{campaign.id}'  # nombre descriptivo para debugging
             )
             hilo.start()
             campanas_lanzadas.append(campaign)
@@ -893,7 +934,8 @@ class MessageAdmin(ModelAdmin):
         'sent_at',
     )
     search_fields = ('phone_number', 'content')
-    list_filter = ('direction', 'delivery_status', 'campaign')
+    search_help_text = 'Buscar por teléfono o contenido del mensaje'
+    list_filter = ()
     readonly_fields = (
         'phone_number', 'direction', 'content', 'delivery_status',
         'campaign', 'sent_at', 'message_type', 'error_log',

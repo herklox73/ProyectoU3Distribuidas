@@ -25,9 +25,6 @@ admin.site.site_title = 'MassSend Admin'
 admin.site.index_title = 'Gestión de Mensajería'
 
 urlpatterns = [
-    # Vistas personalizadas dentro del admin (sidebar siempre visible)
-    path('admin/chat/', admin.site.admin_view(ms_views.chat_embed_view), name='admin_chat'),
-    path('admin/reportes/', admin.site.admin_view(ms_views.reportes_view), name='admin_reportes'),
     path('admin/import-contacts/', admin.site.admin_view(ms_views.import_contacts), name='admin_import_contacts'),
     path('admin/cambiar-numero/', admin.site.admin_view(ms_views.cambiar_numero_admin_view), name='admin_cambiar_numero'),
     path('admin/', admin.site.urls),

@@ -15,7 +15,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # ── Unfold Admin Theme ────────────────────────────────────────────
 UNFOLD = {
     "SITE_TITLE": "MassSend",
-    "SITE_HEADER": "MassSend — Panel de Control",
+    "SITE_HEADER": "MassSend — Sistema de Mensajería",
     "SIDEBAR": {
         "navigation": [
             {
@@ -36,26 +36,11 @@ UNFOLD = {
                         "link": "/admin/mass_sender/message/",
                         "icon": "chat",
                     },
-                    {
-                        "title": "Proveedores de API",
-                        "link": "/admin/mass_sender/apiprovider/",
-                        "icon": "settings",
-                    },
                 ],
             },
             {
                 "title": "Herramientas",
                 "items": [
-                    {
-                        "title": "Chat WhatsApp",
-                        "link": "/admin/chat/",
-                        "icon": "chat_bubble",
-                    },
-                    {
-                        "title": "Reportes",
-                        "link": "/admin/reportes/",
-                        "icon": "bar_chart",
-                    },
                     {
                         "title": "Importar Contactos CSV",
                         "link": "/admin/import-contacts/",
@@ -65,21 +50,6 @@ UNFOLD = {
                         "title": "Cambiar Número WhatsApp",
                         "link": "/admin/cambiar-numero/",
                         "icon": "phonelink_setup",
-                    },
-                ],
-            },
-            {
-                "title": "Administración",
-                "items": [
-                    {
-                        "title": "Usuarios",
-                        "link": "/admin/auth/user/",
-                        "icon": "manage_accounts",
-                    },
-                    {
-                        "title": "Grupos",
-                        "link": "/admin/auth/group/",
-                        "icon": "group",
                     },
                 ],
             },
@@ -115,11 +85,13 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'corsheaders',
     'rest_framework',
     'mass_sender',
 ]
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -128,6 +100,13 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+]
+
+LANGUAGE_CODE = 'es-es'
+
+# ── CORS: permitir peticiones desde React ─────────────────────────
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:5173",
 ]
 
 ROOT_URLCONF = 'core.urls'

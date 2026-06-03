@@ -282,7 +282,7 @@
 <div class="py-4">
     <h2 class="mb-1 fw-bold" style="font-size:1.4rem;">Cambiar Número de WhatsApp</h2>
     <p class="text-muted mb-4" style="font-size:0.9rem;">
-        Desconecta el número actual y vincula otro con QR o con código de teléfono.
+        Desconecta el número actual y vincula otro con código QR o con código de teléfono.
     </p>
 
     <div class="row g-4">
@@ -292,7 +292,7 @@
             <div class="cn-card h-100">
 
                 <div class="mb-4">
-                    <small class="text-muted d-block mb-2" style="font-size:0.78rem; text-transform:uppercase; letter-spacing:.05em;">Estado actual</small>
+                    <small class="text-muted d-block mb-2" style="font-size:0.78rem; text-transform:uppercase; letter-spacing:.05em;">Estado actual de la conexión</small>
                     <div id="estadoBadge"
                          class="cn-status-badge {% if wa_connected %}cn-status-online{% else %}cn-status-offline{% endif %}">
                         <span class="cn-dot {% if wa_connected %}cn-dot-green{% else %}cn-dot-red{% endif %}" id="estadoDot"></span>
@@ -301,36 +301,36 @@
                 </div>
 
                 <div class="mb-4 p-3 rounded" style="background:#f3f4f6;">
-                    <small class="text-muted d-block mb-1" style="font-size:0.78rem;">Número conectado</small>
+                    <small class="text-muted d-block mb-1" style="font-size:0.78rem;">Número actualmente conectado</small>
                     <strong style="font-size:1.05rem;" id="numeroActual">{{ numero_actual }}</strong>
                 </div>
 
                 <div class="mb-4">
-                    <p class="fw-semibold mb-3" style="font-size:0.85rem;">Como cambiar el numero</p>
+                    <p class="fw-semibold mb-3" style="font-size:0.85rem;">Cómo cambiar el número</p>
                     <div class="cn-step">
                         <div class="cn-step-num">1</div>
-                        <div class="cn-step-text">Haz clic en <strong>Desconectar numero</strong>.</div>
+                        <div class="cn-step-text">Haz clic en <strong>Desconectar número</strong>.</div>
                     </div>
                     <div class="cn-step">
                         <div class="cn-step-num">2</div>
-                        <div class="cn-step-text">Elige si prefieres el <strong>codigo QR</strong> o vincular con tu <strong>numero de telefono</strong>.</div>
+                        <div class="cn-step-text">Elige si prefieres el <strong>código QR</strong> o vincular con tu <strong>número de teléfono</strong>.</div>
                     </div>
                     <div class="cn-step">
                         <div class="cn-step-num">3</div>
-                        <div class="cn-step-text">Abre WhatsApp → <strong>Dispositivos vinculados</strong> → sigue el metodo elegido.</div>
+                        <div class="cn-step-text">Abre WhatsApp → <strong>Dispositivos vinculados</strong> → sigue el método elegido.</div>
                     </div>
                     <div class="cn-step">
                         <div class="cn-step-num">4</div>
-                        <div class="cn-step-text">Cuando el estado cambie a <strong>Conectado</strong>, el nuevo numero ya esta activo.</div>
+                        <div class="cn-step-text">Cuando el estado cambie a <strong>Conectado</strong>, el nuevo número ya está activo.</div>
                     </div>
                 </div>
 
                 <div class="p-3 mb-4 rounded" style="background:#fef3c7; border-left:4px solid #f59e0b; font-size:0.8rem;">
-                    El historial de chats y contactos <strong>no se borra</strong>. Solo cambia el numero conectado.
+                    El historial de chats y contactos <strong>no se borra</strong>. Solo cambia el número conectado.
                 </div>
 
                 <button id="btnDesconectar" onclick="desconectarNumero()">
-                    Desconectar numero actual
+                    Desconectar número actual
                 </button>
                 <div id="msgEstado"></div>
 
@@ -343,13 +343,13 @@
 
                 <!-- Tabs -->
                 <div class="cn-tabs">
-                    <button class="cn-tab active" id="tabQR"    onclick="setTab('qr')">Codigo QR</button>
-                    <button class="cn-tab"         id="tabPhone" onclick="setTab('phone')">Codigo por telefono</button>
+                    <button class="cn-tab active" id="tabQR"    onclick="setTab('qr')">Código QR</button>
+                    <button class="cn-tab"         id="tabPhone" onclick="setTab('phone')">Código por teléfono</button>
                 </div>
 
                 <!-- Panel QR -->
                 <div id="panelQR" style="width:100%; display:flex; flex-direction:column; align-items:center;">
-                    <p class="fw-semibold mb-3" style="font-size:0.9rem;">Codigo QR para escanear</p>
+                    <p class="fw-semibold mb-3" style="font-size:0.9rem;">Código QR para escanear</p>
                     <div id="qrBox">
                         {% if wa_connected %}
                             <div class="cn-connected-icon">
@@ -363,22 +363,22 @@
                         {% else %}
                             <div class="spinner-qr" id="qrSpinner"></div>
                             <p style="font-size:0.82rem; color:#6b7280; margin:0;" id="qrWaitText">
-                                Esperando QR de WhatsApp...
+                                Esperando código QR de WhatsApp...
                             </p>
                         {% endif %}
                         <div id="qrCanvas"></div>
                     </div>
                     <p class="text-muted mt-3" style="font-size:0.75rem; text-align:center;">
-                        El QR se actualiza automaticamente cada 3 segundos.
+                        El código QR se actualiza automáticamente cada 3 segundos.
                     </p>
                 </div>
 
                 <!-- Panel Teléfono -->
                 <div id="panelPhone" style="width:100%; display:none; flex-direction:column; align-items:center;">
-                    <p class="fw-semibold mb-2" style="font-size:0.9rem;">Vincular con numero de telefono</p>
+                    <p class="fw-semibold mb-2" style="font-size:0.9rem;">Vincular con número de teléfono</p>
                     <p style="font-size:0.8rem; color:#6b7280; text-align:center; margin-bottom:16px;">
-                        Ingresa el numero que quieres vincular con codigo de pais, sin el signo +.<br>
-                        Luego abre WhatsApp → Dispositivos vinculados → Ingresar codigo.
+                        Ingresa el número que quieres vincular con código de país, sin el signo +.<br>
+                        Luego abre WhatsApp → Dispositivos vinculados → Ingresar código.
                     </p>
 
                     <div class="phone-input-group">
@@ -387,12 +387,12 @@
                                value="593"
                                oninput="this.value=this.value.replace(/[^0-9]/g,'')"
                                maxlength="15"/>
-                        <button id="btnPedirCodigo" onclick="pedirCodigo()">Obtener codigo</button>
+                        <button id="btnPedirCodigo" onclick="pedirCodigo()">Obtener código</button>
                     </div>
 
                     <div id="pairingBox" style="margin-top:24px; width:100%; display:none; flex-direction:column; align-items:center; gap:12px;">
                         <p style="font-size:0.8rem; color:#374151; text-align:center; margin:0;">
-                            Ingresa este codigo en WhatsApp (valido por ~60 segundos):
+                            Ingresa este código en WhatsApp (válido por ~60 segundos):
                         </p>
                         <div class="pairing-code-display">
                             <div class="pairing-digit-group" id="pairingPart1">----</div>
@@ -406,7 +406,7 @@
 
                 <div class="cn-success-box" id="successBox">
                     <p class="fw-bold mb-1" style="color:#065f46;">Conectado exitosamente</p>
-                    <p style="font-size:0.82rem; color:#374151; margin:0;">El nuevo numero ya esta activo y listo para enviar mensajes.</p>
+                    <p style="font-size:0.82rem; color:#374151; margin:0;">El nuevo número ya está activo y listo para enviar mensajes.</p>
                 </div>
 
             </div>
@@ -453,7 +453,7 @@ async function actualizarEstado() {
             dot.className     = 'cn-dot cn-dot-green';
             texto.textContent = 'Conectado';
             btn.disabled      = false;
-            btn.textContent   = 'Desconectar numero actual';
+            btn.textContent   = 'Desconectar número actual';
             mostrarConectadoEnQR();
             if (desconectando) {
                 desconectando = false;
@@ -465,7 +465,7 @@ async function actualizarEstado() {
         } else if (data.has_pairing && data.pairing_code) {
             badge.className   = 'cn-status-badge cn-status-offline';
             dot.className     = 'cn-dot cn-dot-red';
-            texto.textContent = 'Esperando vinculacion...';
+            texto.textContent = 'Esperando vinculación...';
             mostrarCodigoPairing(data.pairing_code, data.pairing_phone);
 
         } else if (data.has_qr && data.qr) {
@@ -528,7 +528,7 @@ function mostrarConectando() {
                     <div class="wha-dot"></div>
                     <div class="wha-dot"></div>
                 </div>
-                <p class="wha-connecting-sub">Verificando la sesion, un momento...</p>
+                <p class="wha-connecting-sub">Verificando la sesión, un momento...</p>
             </div>
         </div>
         <div id="qrCanvas"></div>`;
@@ -546,7 +546,7 @@ function mostrarConectadoEnQR() {
                 <path d="M5 13l4 4L19 7" stroke="#065f46" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
         </div>
-        <p style="font-size:0.85rem;color:#374151;text-align:center;margin:0;">Numero conectado correctamente.</p>
+        <p style="font-size:0.85rem;color:#374151;text-align:center;margin:0;">Número conectado correctamente.</p>
         <div id="qrCanvas"></div>`;
     qrInstance = null;
     lastQRString = null;
@@ -586,7 +586,7 @@ function mostrarCodigoPairing(code, phone) {
     document.getElementById('pairingPart2').textContent = clean.slice(4, 8) || '----';
     const pmsg = document.getElementById('pairingMsg');
     pmsg.className   = 'msg-ok';
-    pmsg.textContent = phone ? 'Codigo listo para el numero ' + phone : 'Ingresa este codigo en WhatsApp';
+    pmsg.textContent = phone ? 'Código listo para el número ' + phone : 'Ingresa este código en WhatsApp';
 }
 
 // ── Desconectar ───────────────────────────────────────────────────────
@@ -622,7 +622,7 @@ async function desconectarNumero() {
 
         if (resp.ok && data.success !== false) {
             msg.className   = 'msg-ok';
-            msg.textContent = 'Desconectado. Esperando nuevo QR en unos segundos...';
+            msg.textContent = 'Desconectado. Esperando nuevo código QR en unos segundos...';
             btn.textContent = 'Desconectar numero actual';
             btn.disabled    = false;
             // Esperar un poco antes de iniciar el polling para dar tiempo al reinicio
@@ -649,7 +649,7 @@ async function pedirCodigo() {
     const phone = input.value.trim();
     if (!phone || phone.length < 7) {
         pmsg.className   = 'msg-err';
-        pmsg.textContent = 'Ingresa un numero valido con codigo de pais, sin el +  (ej: 5491150000000)';
+        pmsg.textContent = 'Ingresa un número válido con código de país, sin el + (ej: 5491150000000)';
         return;
     }
 
@@ -673,7 +673,7 @@ async function pedirCodigo() {
             mostrarCodigoPairing(data.code, phone);
         } else if (data.success) {
             pmsg.className   = 'msg-ok';
-            pmsg.textContent = 'Numero guardado. El codigo aparecera en unos segundos...';
+            pmsg.textContent = 'Número guardado. El código aparecerá en unos segundos...';
             iniciarPolling();
         } else {
             throw new Error(data.error || 'Error desconocido');
@@ -683,7 +683,7 @@ async function pedirCodigo() {
         pmsg.textContent = 'Error: ' + e.message;
     } finally {
         btnPC.disabled    = false;
-        btnPC.textContent = 'Obtener codigo';
+        btnPC.textContent = 'Obtener código';
     }
 }
 
