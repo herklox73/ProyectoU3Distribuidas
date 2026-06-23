@@ -1,7 +1,16 @@
 import axios from 'axios'
 
-// withCredentials: true es esencial para que las cookies de sesión
-// de Django se envíen en cada petición desde React
+// Enviar cookies de sesión Django (login normal)
 axios.defaults.withCredentials = true
+
+// Interceptor: si hay JWT en localStorage (login con Google),
+// lo agrega automáticamente en cada petición como Bearer token
+axios.interceptors.request.use((config) => {
+  const token = localStorage.getItem('jwt_token')
+  if (token) {
+    config.headers['Authorization'] = `Bearer ${token}`
+  }
+  return config
+})
 
 export default axios

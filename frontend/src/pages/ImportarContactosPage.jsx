@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback } from 'react'
+import { sileo } from 'sileo'
 import axios from '../api/axios'
 
 // ── Validación de teléfono (espejo de normalizar_telefono en Python) ──────
@@ -103,9 +104,9 @@ export default function ImportarContactosPage() {
   const procesarArchivo = useCallback((file, sep) => {
     if (!file) return
     if (!file.name.toLowerCase().endsWith('.csv') && !file.name.toLowerCase().endsWith('.txt')) {
-      alert('El archivo debe ser .csv o .txt'); return
+      sileo.error({ title: 'Formato inválido', description: 'El archivo debe ser .csv o .txt' }); return
     }
-    if (file.size > 5 * 1024 * 1024) { alert('El archivo supera 5 MB'); return }
+    if (file.size > 5 * 1024 * 1024) { sileo.error({ title: 'Archivo muy grande', description: 'El límite es 5 MB' }); return }
     setArchivo(file)
     setResultado(null)
     const reader = new FileReader()
@@ -184,8 +185,9 @@ export default function ImportarContactosPage() {
       setArchivo(null)
       setParsed(null)
       if (inputRef.current) inputRef.current.value = ''
+      sileo.success({ title: 'Importación completada', description: `${data.creados} nuevos · ${data.actualizados} actualizados · ${data.errores} errores` })
     } catch (e) {
-      alert(e.response?.data?.error || 'Error al importar')
+      sileo.error({ title: 'Error al importar', description: e.response?.data?.error || 'Error desconocido' })
     } finally {
       setImporting(false)
     }

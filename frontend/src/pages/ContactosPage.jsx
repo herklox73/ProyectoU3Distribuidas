@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { sileo } from 'sileo'
 import axios from '../api/axios'
 
 // ── Validación de teléfono (igual que en ImportarContactosPage) ────────────
@@ -78,6 +79,7 @@ export default function ContactosPage() {
   const [seleccion, setSeleccion]   = useState(new Set())  // IDs seleccionados
   const [modal, setModal]           = useState(null) // 'crear' | 'importar' | 'csv-preview'
   const [form, setForm]             = useState({ telefono: '', nombre: '', tags: '' })
+  const [telefonoLocal, setTelefonoLocal] = useState('')
   const [guardando, setGuardando]   = useState(false)
   const [msg, setMsg]               = useState('')
   // CSV import state
@@ -119,36 +121,74 @@ export default function ContactosPage() {
     const todosSel = contactos.every(c => seleccion.has(c.id))
     setSeleccion(prev => { const n = new Set(prev); todosSel ? ids.forEach(id => n.delete(id)) : ids.forEach(id => n.add(id)); return n })
   }
-  const eliminarSeleccionados = async () => {
+  const eliminarSeleccionados = () => {
     if (!seleccion.size) return
-    if (!confirm(`¿Eliminar ${seleccion.size} contacto${seleccion.size > 1 ? 's' : ''}? Esta acción no se puede deshacer.`)) return
-    try {
-      await axios.post('/whatsapp/api/contactos/bulk-delete/', { ids: [...seleccion] })
-      setSeleccion(new Set())
-      cargar(page)
-    } catch (e) { alert(e.response?.data?.error || 'Error al eliminar') }
+    sileo({
+      title: `¿Eliminar ${seleccion.size} contacto${seleccion.size > 1 ? 's' : ''}?`,
+      description: 'Esta acción no se puede deshacer',
+      action: {
+        label: 'Eliminar',
+        onClick: async () => {
+          try {
+            await axios.post('/whatsapp/api/contactos/bulk-delete/', { ids: [...seleccion] })
+            sileo.success({ title: `${seleccion.size} contacto${seleccion.size > 1 ? 's eliminados' : ' eliminado'}` })
+            setSeleccion(new Set())
+            cargar(page)
+          } catch (e) {
+            sileo.error({ title: 'Error', description: e.response?.data?.error || 'Error al eliminar' })
+          }
+        }
+      }
+    })
   }
 
   const toggleOptout = async (c) => {
-    await axios.put(`/whatsapp/api/contactos/${c.id}/`, { is_opted_out: !c.is_opted_out })
-    cargar(page)
+    try {
+      await axios.put(`/whatsapp/api/contactos/${c.id}/`, { is_opted_out: !c.is_opted_out })
+      if (c.is_opted_out) {
+        sileo.success({ title: 'Contacto activado', description: c.nombre || c.telefono })
+      } else {
+        sileo.success({ title: 'Contacto dado de baja', description: c.nombre || c.telefono })
+      }
+      cargar(page)
+    } catch (e) {
+      sileo.error({ title: 'Error al actualizar', description: e.response?.data?.error || 'Error desconocido' })
+    }
   }
 
-  const eliminar = async (c) => {
-    if (!confirm(`¿Eliminar a ${c.nombre || c.telefono}?`)) return
-    await axios.delete(`/whatsapp/api/contactos/${c.id}/`)
-    cargar(page)
+  const eliminar = (c) => {
+    sileo({
+      title: `¿Eliminar a ${c.nombre || c.telefono}?`,
+      description: 'Esta acción no se puede deshacer',
+      action: {
+        label: 'Eliminar',
+        onClick: async () => {
+          try {
+            await axios.delete(`/whatsapp/api/contactos/${c.id}/`)
+            sileo.success({ title: 'Contacto eliminado' })
+            cargar(page)
+          } catch (e) {
+            sileo.error({ title: 'Error', description: e.response?.data?.error || 'Error al eliminar' })
+          }
+        }
+      }
+    })
   }
 
   const guardarContacto = async () => {
-    if (!form.telefono.trim()) { setMsg('El teléfono es obligatorio'); return }
+    const localLimpio = telefonoLocal.replace(/\D/g, '')
+    if (!localLimpio) { setMsg('El teléfono es obligatorio'); return }
+    const numCompleto = '593' + localLimpio
     setGuardando(true)
     try {
-      await axios.post('/whatsapp/api/contactos/', form)
+      await axios.post('/whatsapp/api/contactos/', { ...form, telefono: numCompleto })
       setModal(null)
       cargar(page)
+      sileo.success({ title: 'Contacto agregado', description: form.nombre || `+${numCompleto}` })
     } catch (e) {
-      setMsg(e.response?.data?.error || 'Error al guardar')
+      const errMsg = e.response?.data?.error || 'Error al guardar'
+      setMsg(errMsg)
+      sileo.error({ title: 'Error al guardar', description: errMsg })
     } finally { setGuardando(false) }
   }
 
@@ -196,12 +236,13 @@ export default function ContactosPage() {
       const contactos = csvSelValidas.map(r => ({ telefono: r.telefono, nombre: r.nombre, etiquetas: r.etiquetas, notas: r.notas }))
       const { data } = await axios.post('/whatsapp/api/contactos/importar/', { contactos })
       setImportResult(data)
-      setModal('importar')  // volver al panel de resultado
+      setModal('importar')
       setCsvArchivo(null); setCsvParsed(null)
       if (csvInputRef.current) csvInputRef.current.value = ''
       cargar(1)
+      sileo.success({ title: 'Importación completada', description: `${data.creados} nuevos · ${data.actualizados} actualizados · ${data.errores} errores` })
     } catch (e) {
-      alert(e.response?.data?.error || 'Error al importar')
+      sileo.error({ title: 'Error al importar', description: e.response?.data?.error || 'Error desconocido' })
     } finally { setGuardando(false) }
   }
 
@@ -219,7 +260,7 @@ export default function ContactosPage() {
           <button onClick={() => { setModal('importar'); setMsg(''); setImportResult(null); setCsvArchivo(null); setCsvParsed(null) }} style={{ padding: '8px 18px', background: '#6366f1', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: '0.85rem' }}>
             Importar CSV
           </button>
-          <button onClick={() => { setModal('crear'); setForm({ telefono: '', nombre: '', tags: '' }); setMsg('') }} style={{ padding: '8px 18px', background: '#25d366', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: '0.85rem' }}>
+          <button onClick={() => { setModal('crear'); setForm({ telefono: '', nombre: '', tags: '' }); setTelefonoLocal(''); setMsg('') }} style={{ padding: '8px 18px', background: '#25d366', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: '0.85rem' }}>
             + Agregar contacto
           </button>
         </div>
@@ -236,7 +277,7 @@ export default function ContactosPage() {
         <select value={estadoFiltro} onChange={e => setEstadoFiltro(e.target.value)} style={{ padding: '8px 12px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: '0.85rem', outline: 'none' }}>
           <option value="">Todos</option>
           <option value="activo">Solo activos</option>
-          <option value="optout">Opt-out</option>
+          <option value="optout">Dados de baja</option>
         </select>
         <select value={tagFiltro} onChange={e => setTagFiltro(e.target.value)} style={{ padding: '8px 12px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: '0.85rem', outline: 'none' }}>
           <option value="">Todas las etiquetas</option>
@@ -304,7 +345,7 @@ export default function ContactosPage() {
                       background: c.is_opted_out ? '#fee2e2' : '#d1fae5',
                       color: c.is_opted_out ? '#991b1b' : '#065f46'
                     }}>
-                      {c.is_opted_out ? 'Opt-out' : 'Activo'}
+                      {c.is_opted_out ? 'Baja' : 'Activo'}
                     </span>
                   </td>
                   <td style={{ padding: '10px 14px', fontSize: '0.78rem', color: '#aaa' }}>{c.created_at}</td>
@@ -316,7 +357,7 @@ export default function ContactosPage() {
                         background: c.is_opted_out ? '#d1fae5' : '#fef3c7',
                         color: c.is_opted_out ? '#065f46' : '#92400e'
                       }}>
-                        {c.is_opted_out ? 'Activar' : 'Opt-out'}
+                        {c.is_opted_out ? 'Activar' : 'Dar de baja'}
                       </button>
                       <button onClick={() => eliminar(c)} style={{ padding: '4px 10px', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer', border: 'none', borderRadius: 6, background: '#fee2e2', color: '#991b1b' }}>
                         Eliminar
@@ -349,8 +390,20 @@ export default function ContactosPage() {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
               <div>
-                <label style={labelStyle}>Teléfono (con código de país, sin +)</label>
-                <input style={inputStyle} value={form.telefono} onChange={e => setForm({ ...form, telefono: e.target.value })} placeholder="5930000000000" />
+                <label style={labelStyle}>Teléfono</label>
+                <div style={{ display: 'flex', border: '1.5px solid #e5e7eb', borderRadius: 8, overflow: 'hidden' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 12px', background: '#f9fafb', borderRight: '1px solid #e5e7eb', fontSize: '0.88rem', fontWeight: 600, color: '#374151', whiteSpace: 'nowrap', userSelect: 'none' }}>
+                    <span>🇪🇨</span>
+                    <span>+593</span>
+                  </div>
+                  <input
+                    style={{ flex: 1, padding: '9px 12px', border: 'none', outline: 'none', fontSize: '0.88rem', boxSizing: 'border-box' }}
+                    value={telefonoLocal}
+                    onChange={e => setTelefonoLocal(e.target.value.replace(/\D/g, ''))}
+                    placeholder="999999999"
+                    maxLength={10}
+                  />
+                </div>
               </div>
               <div>
                 <label style={labelStyle}>Nombre (opcional)</label>

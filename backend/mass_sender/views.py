@@ -1,6 +1,7 @@
 from django.shortcuts import render, redirect
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_http_methods
 from django.views.decorators.clickjacking import xframe_options_exempt
 from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib import messages as django_messages, admin
@@ -24,6 +25,26 @@ def _whatsapp_url(path):
     """Devuelve la URL completa del servicio WhatsApp API."""
     base = getattr(settings, 'WHATSAPP_API_URL', 'http://localhost:3001').rstrip('/')
     return f"{base}{path}"
+
+
+def _get_user(request):
+    """
+    Devuelve el usuario autenticado ya sea por JWT o por sesión Django.
+    Retorna None si no está autenticado.
+    """
+    # Intentar JWT primero
+    from rest_framework_simplejwt.authentication import JWTAuthentication
+    from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
+    try:
+        result = JWTAuthentication().authenticate(request)
+        if result:
+            return result[0]
+    except (InvalidToken, TokenError):
+        pass
+    # Fallback: sesión Django
+    if request.user.is_authenticated:
+        return request.user
+    return None
 
 
 def normalizar_telefono(raw):
@@ -556,8 +577,10 @@ def import_contacts(request):
 # ─────────────────────────────────────────────
 # API DE REPORTES (JSON)
 # ─────────────────────────────────────────────
-@staff_member_required
+@csrf_exempt
 def api_reportes(request):
+    if not _get_user(request):
+        return JsonResponse({'error': 'No autenticado'}, status=401)
     desde_str  = request.GET.get('desde', '')
     hasta_str  = request.GET.get('hasta', '')
     status_fil = request.GET.get('status', '')
@@ -665,12 +688,14 @@ def reportes_view(request):
 # ─────────────────────────────────────────────
 # API PROGRESO DE CAMPAÑA (JSON polling)
 # ─────────────────────────────────────────────
-@staff_member_required
+@csrf_exempt
 def api_campaign_progress(request, campaign_id):
     """
     Devuelve el progreso actual de una campaña en formato JSON.
     Útil para hacer polling desde el frontend y mostrar una barra de progreso.
     """
+    if not _get_user(request):
+        return JsonResponse({'error': 'No autenticado'}, status=401)
     from .models import Campaign, CampaignProgress
     try:
         campaign = Campaign.objects.get(id=campaign_id)
@@ -760,6 +785,26 @@ def api_logout(request):
 
 
 def api_me(request):
+    # Intentar autenticación por JWT primero
+    from rest_framework_simplejwt.authentication import JWTAuthentication
+    from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
+    try:
+        auth = JWTAuthentication()
+        result = auth.authenticate(request)
+        if result:
+            user, token = result
+            return JsonResponse({
+                'authenticated': True,
+                'user': {
+                    'username': user.username,
+                    'email': user.email,
+                    'nombre': token.get('nombre', user.get_full_name()),
+                    'foto': token.get('foto', ''),
+                }
+            })
+    except (InvalidToken, TokenError):
+        pass
+    # Fallback: sesión Django normal
     if request.user.is_authenticated:
         return JsonResponse({
             'authenticated': True,
@@ -772,7 +817,7 @@ def api_me(request):
 
 @csrf_exempt
 def api_campanas_list(request):
-    if not request.user.is_authenticated:
+    if not _get_user(request):
         return JsonResponse({'error': 'No autenticado'}, status=401)
 
     if request.method == 'GET':
@@ -831,7 +876,7 @@ def api_campanas_list(request):
 
 @csrf_exempt
 def api_campanas_detail(request, pk):
-    if not request.user.is_authenticated:
+    if not _get_user(request):
         return JsonResponse({'error': 'No autenticado'}, status=401)
     try:
         campana = Campaign.objects.get(pk=pk)
@@ -901,7 +946,7 @@ def api_campanas_detail(request, pk):
 
 @csrf_exempt
 def api_campanas_ejecutar(request, pk):
-    if not request.user.is_authenticated:
+    if not _get_user(request):
         return JsonResponse({'error': 'No autenticado'}, status=401)
     if request.method != 'POST':
         return JsonResponse({'error': 'Método no permitido'}, status=405)
@@ -955,7 +1000,7 @@ def api_campanas_ejecutar(request, pk):
 
 @csrf_exempt
 def api_contactos_list(request):
-    if not request.user.is_authenticated:
+    if not _get_user(request):
         return JsonResponse({'error': 'No autenticado'}, status=401)
 
     if request.method == 'GET':
@@ -1025,7 +1070,7 @@ def api_contactos_list(request):
 
 @csrf_exempt
 def api_contactos_detail(request, pk):
-    if not request.user.is_authenticated:
+    if not _get_user(request):
         return JsonResponse({'error': 'No autenticado'}, status=401)
     try:
         contacto = Contact.objects.get(pk=pk)
@@ -1055,7 +1100,7 @@ def api_contactos_detail(request, pk):
 @csrf_exempt
 def api_contactos_bulk_delete(request):
     """Elimina múltiples contactos por lista de IDs."""
-    if not request.user.is_authenticated:
+    if not _get_user(request):
         return JsonResponse({'error': 'No autenticado'}, status=401)
     if request.method != 'POST':
         return JsonResponse({'error': 'Método no permitido'}, status=405)
@@ -1072,7 +1117,7 @@ def api_contactos_bulk_delete(request):
 
 @csrf_exempt
 def api_contactos_importar(request):
-    if not request.user.is_authenticated:
+    if not _get_user(request):
         return JsonResponse({'error': 'No autenticado'}, status=401)
     if request.method != 'POST':
         return JsonResponse({'error': 'Método no permitido'}, status=405)
@@ -1090,7 +1135,7 @@ def api_contactos_importar(request):
 # ── Mensajes ──────────────────────────────────────────────────────────────
 
 def api_mensajes_list(request):
-    if not request.user.is_authenticated:
+    if not _get_user(request):
         return JsonResponse({'error': 'No autenticado'}, status=401)
 
     page = int(request.GET.get('page', 1))
@@ -1122,3 +1167,19 @@ def api_mensajes_list(request):
         'page': page,
         'pages': (total + per_page - 1) // per_page,
     })
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_mensajes_bulk_delete(request):
+    if not _get_user(request):
+        return JsonResponse({'error': 'No autenticado'}, status=401)
+    try:
+        data = json.loads(request.body)
+        ids = data.get('ids', [])
+        if not ids:
+            return JsonResponse({'error': 'Sin ids'}, status=400)
+        eliminados, _ = Message.objects.filter(id__in=ids).delete()
+        return JsonResponse({'eliminados': eliminados})
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)

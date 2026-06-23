@@ -59,4 +59,5 @@ urlpatterns = [
 
     # Mensajes
     path('api/mensajes/', views.api_mensajes_list, name='api_mensajes_list'),
+    path('api/mensajes/bulk-delete/', views.api_mensajes_bulk_delete, name='api_mensajes_bulk_delete'),
 ]
