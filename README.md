@@ -56,8 +56,8 @@ El sistema está compuesto por tres procesos independientes:
 ### 1. Clonar el repositorio
 
 ```bash
-git clone https://github.com/herklox73/proyectoU2Distribuidas.git
-cd proyectoU2Distribuidas
+git clone https://github.com/herklox73/ProyectoU3Distribuidas.git
+cd ProyectoU3Distribuidas
 ```
 
 ### 2. Configurar el backend Django
@@ -128,19 +128,28 @@ Iniciar sesión con las credenciales del superusuario creado en el paso 2, o usa
 ## Estructura del proyecto
 
 ```
-proyectoU2Distribuidas/
+ProyectoU3Distribuidas/
 ├── backend/
-│   ├── core/                    # Configuración Django (settings, urls, wsgi)
+│   ├── core/                    # Configuración Django (settings, urls, wsgi, asgi)
 │   ├── mass_sender/             # App principal
 │   │   ├── models.py            # Contact, Message, Campaign, CampaignProgress
 │   │   ├── views.py             # API REST + consistencia transaccional
 │   │   ├── services.py          # MessageService, ContactService (principios SOLID)
+│   │   ├── ai_service.py        # Cliente RPC hacia Ollama (llamada síncrona)
+│   │   ├── ai_views.py          # Endpoint del Asistente IA
+│   │   ├── pocketbase_media.py  # Subida/entrega de archivos protegidos
 │   │   └── migrations/
+│   ├── billing/                 # Créditos, pagos en sandbox
+│   ├── email_auth/              # Verificación de cuenta, recuperación de contraseña, MFA (TOTP)
 │   ├── whatsapp_api/            # Gateway Node.js + Baileys
-│   │   └── index.js             # WebSocket + REST hacia WhatsApp
+│   │   ├── index.js             # WebSocket + REST hacia WhatsApp + cola de envíos
+│   │   └── Dockerfile
+│   ├── Dockerfile
 │   ├── masssend.log             # Archivo de logs del sistema
 │   └── manage.py
 ├── frontend/
+│   ├── Dockerfile
+│   ├── nginx.conf
 │   └── src/
 │       ├── App.jsx              # SPA layout + navegación
 │       ├── context/
@@ -148,7 +157,12 @@ proyectoU2Distribuidas/
 │       │   └── WaContext.jsx    # Estado global WhatsApp
 │       ├── hooks/
 │       │   └── useWebSocket.js  # Singleton WebSocket
-│       └── pages/               # Chat, Campañas, Contactos, Importar CSV, Reportes
+│       └── pages/               # Chat, Campañas, Contactos, Asistente IA, Créditos,
+│                                 # Cola de correos, Verificación/MFA, Reportes
+├── infra/
+│   └── pocketbase/              # Dockerfile del servicio de almacenamiento protegido
+├── compose.yaml                 # Despliegue de desarrollo (Docker Compose)
+├── stack.yml                    # Despliegue en clúster (Docker Swarm, réplicas)
 ├── requirements.txt
 └── README.md
 ```
@@ -249,3 +263,8 @@ Para apagar: `docker stack rm masssend` (o `docker compose down` en modo Compose
 
 - **Asistente IA local (Ollama, `qwen2.5:0.5b`)**: página "Asistente IA" — guía de uso del sistema y redacción de mensajes de campaña. Comunicación síncrona (RPC sobre HTTP) con timeout y medición de latencia.
 - **Almacenamiento protegido en PocketBase**: las fotos/videos de campañas se guardan en la colección privada `campaign_media` (archivo `protected`). La URL directa es rechazada; el archivo solo se entrega por `GET /whatsapp/api/campanas/<id>/media/` con usuario autenticado (sesión o JWT). Respaldo automático en disco local si PocketBase no está disponible.
+- **Colas asíncronas independientes**: una cola de correos (`EmailTask` + worker en segundo plano, visible en la página "Cola de correos") y una cola de envíos de WhatsApp (`sendQueue` en el gateway Node.js, con callback a `/api/send-result/`). El productor responde de inmediato; el consumidor procesa en segundo plano.
+- **Verificación de cuenta y recuperación de contraseña**: registro con verificación por correo (`VerifyAccountPage`), flujo de "olvidé mi contraseña" (`ForgotPasswordPage` / `ResetPasswordPage`) y ajustes de seguridad (`SecuritySettingsPage`).
+- **Autenticación en dos pasos (TOTP)**: segundo factor de autenticación por app autenticadora (`MfaLoginPage`), conforme a RFC 6238.
+- **Créditos y pagos**: gestión de créditos de la cuenta y flujo de pago en entorno sandbox (`CreditosPage`, `PaymentReturnPage`), con acreditación consistente ante escrituras concurrentes.
+- **Notificaciones**: panel de notificaciones del usuario (`NotificacionesPage`).
