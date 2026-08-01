@@ -1,0 +1,133 @@
+# MassSend — arquitectura distribuida completa en Docker Compose.
+# Seis servicios independientes (NO monolito): cada uno con su imagen,
+# su contenedor y comunicación por la red interna `masssend_network`.
+#
+#   frontend (nginx:80→5173) ─→ backend (Django:8000)
+#   backend ─→ whatsapp (Node:3001), ollama (11434), pocketbase (8080→8090)
+#   whatsapp ─→ backend (webhooks) y pocketbase (descarga fotos/videos)
+#   navegador ─→ frontend:5173, backend:8000, ws://localhost:3001, pocketbase:8090
+services:
+
+  # ── Interfaz React (build de Vite servido por Nginx) ──────────────
+  frontend:
+    build:
+      context: ./frontend
+    container_name: masssend-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    networks:
+      - masssend_network
+    restart: unless-stopped
+
+  # ── Backend Django (API, autenticación, campañas, pagos) ──────────
+  backend:
+    build:
+      context: ./backend
+    container_name: masssend-backend
+    env_file:
+      - ./backend/.env
+    environment:
+      # Dentro de la red Docker los servicios se llaman por su nombre
+      WHATSAPP_API_URL: "http://whatsapp:3001"
+      OLLAMA_URL: "http://ollama:11434"
+      POCKETBASE_URL: "http://pocketbase:8080"
+      # URL que usa el NAVEGADOR para ver las fotos/videos
+      POCKETBASE_PUBLIC_URL: "http://localhost:8090"
+      DEBUG: "True"
+    ports:
+      - "8000:8000"
+    volumes:
+      # La base de datos y los archivos locales viven en el host:
+      # son los mismos datos con o sin Docker.
+      - ./backend/db.sqlite3:/app/db.sqlite3
+      - ./backend/media:/app/media
+    depends_on:
+      - pocketbase
+      - ollama
+    networks:
+      - masssend_network
+    restart: unless-stopped
+
+  # ── Worker: consumidor de la cola de correos (asíncrono) ───────────
+  # Mismo código e imagen que "backend", pero corre otro comando:
+  # en vez de servir HTTP, se queda en bucle revisando EmailTask
+  # (PENDING -> PROCESSING -> SENT/FAILED). Es un servicio aparte para
+  # que un correo lento (SMTP) nunca bloquee la respuesta HTTP principal.
+  email-worker:
+    build:
+      context: ./backend
+    container_name: masssend-email-worker
+    command: ["python", "manage.py", "process_email_queue"]
+    env_file:
+      - ./backend/.env
+    environment:
+      WHATSAPP_API_URL: "http://whatsapp:3001"
+      OLLAMA_URL: "http://ollama:11434"
+      POCKETBASE_URL: "http://pocketbase:8080"
+      POCKETBASE_PUBLIC_URL: "http://localhost:8090"
+      DEBUG: "True"
+    volumes:
+      - ./backend/db.sqlite3:/app/db.sqlite3
+      - ./backend/media:/app/media
+    depends_on:
+      - backend
+    networks:
+      - masssend_network
+    restart: unless-stopped
+
+  # ── Servicio WhatsApp (Node + Baileys, genera el QR) ──────────────
+  whatsapp:
+    build:
+      context: ./backend/whatsapp_api
+    container_name: masssend-whatsapp
+    environment:
+      PORT: "3001"
+      DJANGO_API_URL: "http://backend:8000"
+    ports:
+      - "3001:3001"   # el navegador se conecta al WebSocket por este puerto
+    volumes:
+      # La sesión de WhatsApp se conserva entre reinicios (no re-escanear QR)
+      - ./backend/whatsapp_api/auth_info_baileys:/app/auth_info_baileys
+    networks:
+      - masssend_network
+    restart: unless-stopped
+
+  # ── Modelo de IA local (asistente del sistema) ────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: masssend-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - masssend_ollama_models:/root/.ollama
+    networks:
+      - masssend_network
+    restart: unless-stopped
+
+  # ── Almacenamiento de fotos/videos de campañas ────────────────────
+  pocketbase:
+    build:
+      context: ./infra/pocketbase
+      args:
+        PB_VERSION: "0.39.8"
+    container_name: masssend-pocketbase
+    environment:
+      PB_SUPERUSER_EMAIL: ${PB_SUPERUSER_EMAIL:-admin@masssend.local}
+      PB_SUPERUSER_PASSWORD: ${PB_SUPERUSER_PASSWORD:-masssend123456}
+    ports:
+      - "8090:8080"
+    volumes:
+      - masssend_pocketbase_data:/pb/pb_data
+    networks:
+      - masssend_network
+    restart: unless-stopped
+
+networks:
+  masssend_network:
+    driver: bridge
+
+volumes:
+  masssend_ollama_models:
+  masssend_pocketbase_data:

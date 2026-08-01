@@ -89,6 +89,8 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework_simplejwt',
     'mass_sender',
+    'email_auth',
+    'billing',
 ]
 
 MIDDLEWARE = [
@@ -143,10 +145,12 @@ if DATABASE_URL:
         )
     }
 else:
+    # SQLITE_PATH permite ubicar la base en un volumen de Docker Swarm
+    # (una sola instancia de BD compartida, requisito del clúster).
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': BASE_DIR / 'db.sqlite3',
+            'NAME': os.environ.get('SQLITE_PATH', BASE_DIR / 'db.sqlite3'),
         }
     }
 
@@ -182,6 +186,60 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # ── Servicio WhatsApp API (Node.js) ───────────────────────────────
 WHATSAPP_API_URL = os.environ.get('WHATSAPP_API_URL', 'http://localhost:3000')
 
+# ── Modelo de IA local (Ollama) — asistente de MassSend ───────────
+# Comunicación síncrona (RPC sobre HTTP) con el modelo servido por
+# Ollama, según lo visto en clase (ollama-rpc-practica).
+OLLAMA_URL = os.environ.get('OLLAMA_URL', 'http://localhost:11434')
+OLLAMA_MODEL = os.environ.get('OLLAMA_MODEL', 'qwen2.5:0.5b')
+OLLAMA_TIMEOUT_SECONDS = int(os.environ.get('OLLAMA_TIMEOUT_SECONDS', '60'))
+
+# ── PocketBase — almacenamiento de fotos/videos de campañas ───────
+# Según lo visto en clase (pocketbase-storage): los archivos viven en
+# un servicio de almacenamiento independiente; Django guarda la URL.
+POCKETBASE_URL = os.environ.get('POCKETBASE_URL', 'http://localhost:8090')
+# URL con la que otros servicios (Node/WhatsApp, navegador) descargan
+# los archivos; normalmente es la misma.
+POCKETBASE_PUBLIC_URL = os.environ.get('POCKETBASE_PUBLIC_URL', POCKETBASE_URL)
+POCKETBASE_COLLECTION = os.environ.get('POCKETBASE_COLLECTION', 'campaign_media')
+POCKETBASE_ADMIN_EMAIL = os.environ.get('POCKETBASE_ADMIN_EMAIL', 'admin@masssend.local')
+POCKETBASE_ADMIN_PASSWORD = os.environ.get('POCKETBASE_ADMIN_PASSWORD', 'masssend123456')
+
+# ── Correo (Gmail) — verificación de cuenta / MFA / recuperación ──
+# Reutiliza la misma cuenta y contraseña de aplicación validadas en
+# la práctica "practica-verificacion-gmail" (smtp.gmail.com:465 SSL).
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 465
+EMAIL_USE_SSL = True
+EMAIL_USE_TLS = False
+EMAIL_HOST_USER = os.environ.get('EMAIL_USER', '')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_APP_PASSWORD', '').replace(' ', '')
+DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
+
+EMAIL_CODE_TTL_MINUTES = int(os.environ.get('EMAIL_CODE_TTL_MINUTES', '5'))
+EMAIL_MAX_VERIFICATION_ATTEMPTS = int(os.environ.get('EMAIL_MAX_VERIFICATION_ATTEMPTS', '5'))
+EMAIL_QUEUE_MAX_ATTEMPTS = int(os.environ.get('EMAIL_MAX_QUEUE_ATTEMPTS', '3'))
+EMAIL_QUEUE_INTERVAL_MS = int(os.environ.get('EMAIL_QUEUE_INTERVAL_MS', '5000'))
+EMAIL_MAX_ATTACHMENT_SIZE_MB = int(os.environ.get('EMAIL_MAX_ATTACHMENT_SIZE_MB', '20'))
+
+# MFA (TOTP tipo Google/Microsoft Authenticator)
+MFA_ISSUER = os.environ.get('MFA_ISSUER', 'MassSend')
+MFA_WINDOW = int(os.environ.get('MFA_WINDOW', '1'))
+
+# ── Pasarelas de pago (créditos) ──────────────────────────────────
+PAYPAL_CLIENT_ID = os.environ.get('PAYPAL_CLIENT_ID', '')
+PAYPAL_CLIENT_SECRET = os.environ.get('PAYPAL_CLIENT_SECRET', '')
+PAYPAL_BASE_URL = os.environ.get('PAYPAL_BASE_URL', 'https://api-m.sandbox.paypal.com')
+
+PAYPHONE_TOKEN = os.environ.get('PAYPHONE_TOKEN', '')
+PAYPHONE_STORE_ID = os.environ.get('PAYPHONE_STORE_ID', '')
+PAYPHONE_BASE_URL = os.environ.get('PAYPHONE_BASE_URL', 'https://pay.payphonetodoesposible.com')
+
+# Créditos gratis de bienvenida (se otorgan una sola vez, al crear la
+# billetera del usuario, para que pueda probar el sistema antes de
+# comprar más).
+FREE_SIGNUP_CREDITS = int(os.environ.get('FREE_SIGNUP_CREDITS', '10'))
+
 # ── Google OAuth 2.0 ──────────────────────────────────────────────
 GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
 GOOGLE_CLIENT_SECRET = os.environ.get('GOOGLE_CLIENT_SECRET', '')
@@ -208,6 +266,10 @@ REST_FRAMEWORK = {
 }
 
 # ── Logging ───────────────────────────────────────────────────────
+# La carpeta de logs debe existir antes de configurar el FileHandler
+# (en Docker la imagen se construye sin ella).
+(BASE_DIR / 'logs').mkdir(exist_ok=True)
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,

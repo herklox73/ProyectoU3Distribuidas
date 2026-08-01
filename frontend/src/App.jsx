@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Toaster } from 'sileo'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { WaProvider, useWa } from './context/WaContext'
-import LoginPage from './pages/LoginPage'
+import AuthFlow from './pages/AuthFlow'
+import ResetPasswordPage from './pages/ResetPasswordPage'
 import InicioPage from './pages/InicioPage'
 import ChatPage from './pages/ChatPage'
 import ReportesPage from './pages/ReportesPage'
@@ -11,6 +12,12 @@ import ContactosPage from './pages/ContactosPage'
 import MensajesPage from './pages/MensajesPage'
 import WhatsAppPage from './pages/WhatsAppPage'
 import ImportarContactosPage from './pages/ImportarContactosPage'
+import SecuritySettingsPage from './pages/SecuritySettingsPage'
+import NotificacionesPage from './pages/NotificacionesPage'
+import ColaCorreosPage from './pages/ColaCorreosPage'
+import CreditosPage from './pages/CreditosPage'
+import PaymentReturnPage from './pages/PaymentReturnPage'
+import AsistentePage from './pages/AsistentePage'
 
 // SVG icons para cada módulo
 const ICONS = {
@@ -66,18 +73,68 @@ const ICONS = {
       <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 1.27h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.95a16 16 0 0 0 6 6l1.06-.94a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>
     </svg>
   ),
+  seguridad: (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+    </svg>
+  ),
+  notificaciones: (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 4h16v16H4z"/>
+      <polyline points="4 4 12 13 20 4"/>
+    </svg>
+  ),
+  cola: (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10"/>
+      <polyline points="12 6 12 12 16 14"/>
+    </svg>
+  ),
+  creditos: (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="1" y="4" width="22" height="16" rx="2"/>
+      <line x1="1" y1="10" x2="23" y2="10"/>
+    </svg>
+  ),
+  asistente: (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="4" y="7" width="16" height="12" rx="2"/>
+      <circle cx="9" cy="13" r="1"/>
+      <circle cx="15" cy="13" r="1"/>
+      <line x1="12" y1="7" x2="12" y2="3"/>
+      <circle cx="12" cy="3" r="1"/>
+    </svg>
+  ),
 }
 
 const NAV = [
-  { id: 'inicio',    label: 'Inicio'            },
-  { id: 'chat',      label: 'Chat'              },
-  { id: 'campanas',  label: 'Campañas'          },
-  { id: 'contactos', label: 'Contactos'         },
-  { id: 'importar',  label: 'Importar CSV'      },
-  { id: 'mensajes',  label: 'Mensajes'          },
-  { id: 'reportes',  label: 'Reportes'          },
-  { id: 'whatsapp',  label: 'Conectar WhatsApp' },
+  { id: 'inicio',         label: 'Inicio'              },
+  { id: 'chat',           label: 'Chat'                },
+  { id: 'campanas',       label: 'Campañas'            },
+  { id: 'contactos',      label: 'Contactos'           },
+  { id: 'importar',       label: 'Importar CSV'        },
+  { id: 'mensajes',       label: 'Mensajes'            },
+  { id: 'reportes',       label: 'Reportes'            },
+  { id: 'whatsapp',       label: 'Conectar WhatsApp'   },
+  { id: 'notificaciones', label: 'Notificaciones'      },
+  { id: 'cola',           label: 'Cola de correos'     },
+  { id: 'seguridad',      label: 'Seguridad (MFA)'     },
+  { id: 'creditos',       label: 'Créditos'            },
+  { id: 'asistente',      label: 'Asistente IA'        },
 ]
+
+// El admin (cualquier cuenta marcada is_staff=True en Django) ve TODO
+// el menú: lo administrativo (reportes, cola de correos) más todo lo
+// operativo, por si necesita probar o ejecutar algo él mismo. Los
+// usuarios normales ven las páginas operativas de envío de mensajes
+// más "Seguridad (MFA)" -es su propia configuración de cuenta, no algo
+// exclusivo de admin- y "Créditos". El rol se decide con user.isStaff,
+// validado siempre desde el backend (nunca de la URL ni localStorage).
+// Los admins no consumen créditos al ejecutar campañas (ver
+// mass_sender/views.py api_campanas_ejecutar), aunque sí puedan ver la
+// página.
+const USER_NAV_IDS  = ['inicio', 'campanas', 'contactos', 'importar', 'mensajes', 'whatsapp', 'notificaciones', 'seguridad', 'creditos', 'asistente']
+const ADMIN_NAV_IDS = NAV.map(n => n.id)
 
 function SidebarStatus({ collapsed }) {
   const { waListo } = useWa()
@@ -119,13 +176,25 @@ function Layout() {
   const [pagina, setPagina]       = useState('inicio')
   const [collapsed, setCollapsed] = useState(false)
 
+  const visibleIds = user?.isStaff ? ADMIN_NAV_IDS : USER_NAV_IDS
+  const visibleNav = NAV.filter(n => visibleIds.includes(n.id))
+
+  // Si la página actual no le corresponde a este rol (ej: quedó
+  // "inicio" seleccionada pero el usuario es admin, que no tiene esa
+  // pestaña), se cambia a la primera página válida para su rol.
+  useEffect(() => {
+    if (user && !visibleIds.includes(pagina)) {
+      setPagina(visibleIds[0])
+    }
+  }, [user, pagina])
+
   if (loading) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: '#aaa' }}>
       Cargando...
     </div>
   )
 
-  if (!user) return <LoginPage />
+  if (!user) return <AuthFlow />
 
   const w = collapsed ? 64 : 220
 
@@ -176,7 +245,7 @@ function Layout() {
 
         {/* Nav items */}
         <nav style={{ display: 'flex', flexDirection: 'column', padding: '12px 0', gap: 2, flex: 1, overflowY: 'auto' }}>
-          {NAV.map(n => (
+          {visibleNav.map(n => (
             <button
               key={n.id}
               title={collapsed ? n.label : ''}
@@ -223,7 +292,7 @@ function Layout() {
         }}>
           {!collapsed && (
             <div style={{ fontSize: '0.74rem', color: '#6b7280', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {user.username}
+              {user.username || user.email}
             </div>
           )}
           <button
@@ -260,14 +329,23 @@ function Layout() {
       </aside>
 
       <main className="main">
-        <div style={{ display: pagina === 'inicio'    ? 'contents' : 'none' }}><InicioPage onNavegar={setPagina} /></div>
-        <div style={{ display: pagina === 'chat'      ? 'contents' : 'none' }}><ChatPage /></div>
-        <div style={{ display: pagina === 'campanas'  ? 'contents' : 'none' }}><CampanasPage /></div>
-        <div style={{ display: pagina === 'contactos' ? 'contents' : 'none' }}><ContactosPage /></div>
-        <div style={{ display: pagina === 'importar'  ? 'contents' : 'none' }}><ImportarContactosPage /></div>
-        <div style={{ display: pagina === 'mensajes'  ? 'contents' : 'none' }}><MensajesPage /></div>
-        <div style={{ display: pagina === 'reportes'  ? 'contents' : 'none' }}><ReportesPage /></div>
-        <div style={{ display: pagina === 'whatsapp'  ? 'contents' : 'none' }}><WhatsAppPage /></div>
+        {/* Cada página solo se monta si el rol del usuario la tiene
+            habilitada (visibleIds); así una cuenta normal nunca llega a
+            pedir datos de endpoints solo-admin (ej. la cola de correos),
+            y viceversa. */}
+        {visibleIds.includes('inicio')         && <div style={{ display: pagina === 'inicio'    ? 'contents' : 'none' }}><InicioPage onNavegar={setPagina} /></div>}
+        {visibleIds.includes('chat')           && <div style={{ display: pagina === 'chat'      ? 'contents' : 'none' }}><ChatPage /></div>}
+        {visibleIds.includes('campanas')       && <div style={{ display: pagina === 'campanas'  ? 'contents' : 'none' }}><CampanasPage /></div>}
+        {visibleIds.includes('contactos')      && <div style={{ display: pagina === 'contactos' ? 'contents' : 'none' }}><ContactosPage /></div>}
+        {visibleIds.includes('importar')       && <div style={{ display: pagina === 'importar'  ? 'contents' : 'none' }}><ImportarContactosPage /></div>}
+        {visibleIds.includes('mensajes')       && <div style={{ display: pagina === 'mensajes'  ? 'contents' : 'none' }}><MensajesPage /></div>}
+        {visibleIds.includes('reportes')       && <div style={{ display: pagina === 'reportes'  ? 'contents' : 'none' }}><ReportesPage /></div>}
+        {visibleIds.includes('whatsapp')       && <div style={{ display: pagina === 'whatsapp'  ? 'contents' : 'none' }}><WhatsAppPage /></div>}
+        {visibleIds.includes('notificaciones') && <div style={{ display: pagina === 'notificaciones' ? 'contents' : 'none' }}><NotificacionesPage /></div>}
+        {visibleIds.includes('cola')           && <div style={{ display: pagina === 'cola'      ? 'contents' : 'none' }}><ColaCorreosPage /></div>}
+        {visibleIds.includes('seguridad')      && <div style={{ display: pagina === 'seguridad' ? 'contents' : 'none' }}><SecuritySettingsPage /></div>}
+        {visibleIds.includes('creditos')       && <div style={{ display: pagina === 'creditos'  ? 'contents' : 'none' }}><CreditosPage /></div>}
+        {visibleIds.includes('asistente')      && <div style={{ display: pagina === 'asistente' ? 'contents' : 'none' }}><AsistentePage /></div>}
       </main>
 
       <style>{`
@@ -281,6 +359,22 @@ function Layout() {
 }
 
 export default function App() {
+  // El enlace de recuperación de contraseña que llega por Gmail apunta
+  // directo a esta ruta (?token=...&email=...). Se renderiza aparte,
+  // sin exigir sesión, igual que hacía /reset-password en la práctica
+  // de Node (que servía una página estática independiente).
+  if (window.location.pathname === '/reset-password') {
+    return <ResetPasswordPage />
+  }
+
+  // PayPal/PayPhone redirigen de vuelta acá tras el pago (ver
+  // application_context.return_url en paypal_gateway.py y la
+  // redirección configurada en el panel de PayPhone). Se muestra
+  // fuera del Layout normal, igual que /reset-password.
+  if (window.location.pathname === '/billing/return') {
+    return <PaymentReturnPage onGoToDashboard={() => { window.location.href = '/' }} />
+  }
+
   return (
     <AuthProvider>
       <WaProvider>

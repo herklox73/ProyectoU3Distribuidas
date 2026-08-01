@@ -41,28 +41,22 @@ export default function WhatsAppPage() {
     })
   }, [estado.qr])
 
-  const desconectar = () => {
-    sileo({
-      title: '¿Desconectar WhatsApp?',
-      description: 'Tendrás que escanear el QR de nuevo',
-      action: {
-        label: 'Desconectar',
-        onClick: async () => {
-          setDesconectando(true)
-          setMsgBtn('')
-          try {
-            await axios.post('/whatsapp/api/cambiar-numero/')
-            setMsgBtn('Desconectado. Esperando nuevo código QR...')
-            sileo.success({ title: 'WhatsApp desconectado', description: 'Escanea el nuevo QR para reconectar' })
-          } catch {
-            setMsgBtn('Error al desconectar')
-            sileo.error({ title: 'Error al desconectar' })
-          } finally {
-            setDesconectando(false)
-          }
-        }
-      }
-    })
+  const desconectar = async () => {
+    // Confirmación nativa: siempre visible (el aviso de sileo abajo era
+    // fácil de pasar por alto y parecía que el botón no hacía nada).
+    if (!window.confirm('¿Desconectar WhatsApp? Tendrás que escanear el QR de nuevo.')) return
+    setDesconectando(true)
+    setMsgBtn('')
+    try {
+      await axios.post('/whatsapp/api/cambiar-numero/')
+      setMsgBtn('Desconectado. Esperando nuevo código QR...')
+      sileo.success({ title: 'WhatsApp desconectado', description: 'Escanea el nuevo QR para reconectar' })
+    } catch {
+      setMsgBtn('Error al desconectar')
+      sileo.error({ title: 'Error al desconectar' })
+    } finally {
+      setDesconectando(false)
+    }
   }
 
   const pedirCodigo = async () => {

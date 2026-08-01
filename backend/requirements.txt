@@ -12,3 +12,8 @@ requests==2.32.3
 djangorestframework-simplejwt==5.3.1
 google-auth-oauthlib==1.2.1
 google-auth==2.29.0
+
+# ── Verificación de correo (Gmail) / MFA / recuperación ────────────
+pyotp==2.9.0
+qrcode[pil]==7.4.2
+django-cors-headers==4.4.0

@@ -18,6 +18,18 @@ export default defineConfig({
         }
       },
       '/admin': 'http://localhost:8000',
+      '/api': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        // Necesario para el login por sesión (MFA / verificación de correo)
+        configure: (proxy) => {
+          proxy.on('proxyReq', (proxyReq, req) => {
+            if (req.headers.cookie) {
+              proxyReq.setHeader('Cookie', req.headers.cookie)
+            }
+          })
+        }
+      },
     }
   }
 })

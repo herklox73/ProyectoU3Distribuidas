@@ -267,12 +267,29 @@ async function processSendQueue() {
                     });
                 }
             } else if (media_url) {
+                // Descarga el archivo (ej. desde PocketBase) y lo envía según
+                // su tipo real: antes se mandaba todo como imagen y los videos
+                // "se enviaban" pero nunca llegaban al destinatario.
                 const resp = await fetch(media_url);
+                if (!resp.ok) {
+                    throw new Error(`No se pudo descargar el media (${resp.status}): ${media_url}`);
+                }
                 const buffer = Buffer.from(await resp.arrayBuffer());
                 const mime = resp.headers.get('content-type') || 'application/octet-stream';
-                msgResult = await sock.sendMessage(jid, {
-                    image: buffer, caption: message || '', mimetype: mime
-                });
+                if (mime.startsWith('image/')) {
+                    msgResult = await sock.sendMessage(jid, {
+                        image: buffer, caption: message || '', mimetype: mime
+                    });
+                } else if (mime.startsWith('video/')) {
+                    msgResult = await sock.sendMessage(jid, {
+                        video: buffer, caption: message || '', mimetype: mime
+                    });
+                } else {
+                    msgResult = await sock.sendMessage(jid, {
+                        document: buffer, caption: message || '',
+                        mimetype: mime, fileName: media_url.split('/').pop() || 'archivo'
+                    });
+                }
             } else {
                 msgResult = await sock.sendMessage(jid, { text: message });
             }
@@ -371,7 +388,14 @@ app.post('/api/logout', async (req, res) => {
         res.json({ success: true, message: 'Desconectando...' });
 
         try { if (sock) await sock.logout(); } catch (e) {}
-        try { fs.rmSync('./auth_info_baileys', { recursive: true, force: true }); } catch (_) {}
+        // La carpeta puede ser un punto de montaje de Docker (no se puede
+        // eliminar la carpeta en sí): se borra su CONTENIDO archivo por
+        // archivo, que es lo que realmente invalida la sesión.
+        try {
+            for (const f of fs.readdirSync('./auth_info_baileys')) {
+                try { fs.rmSync(`./auth_info_baileys/${f}`, { recursive: true, force: true }); } catch (_) {}
+            }
+        } catch (_) {}
 
         setTimeout(startClient, 2000);
     } catch (err) {

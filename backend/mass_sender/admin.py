@@ -631,8 +631,26 @@ def _send_campaign_background(campaign_id, contact_ids):
                 progress.last_error = f"Error al leer archivo media: {str(e)[:150]}"
                 progress.save()
         elif campaign.media_url:
-            media_payload = {'media_url': campaign.media_url}
-            print(f"[MassSend] Usando media_url: {campaign.media_url}")
+            from mass_sender.pocketbase_media import descargar_media, es_url_pocketbase
+            if es_url_pocketbase(campaign.media_url):
+                # Archivo protegido en PocketBase: solo Django (superusuario)
+                # puede descargarlo; se envía a Node en base64, igual que un
+                # archivo local. Node nunca conoce la URL privada.
+                contenido, mime = descargar_media(campaign.media_url)
+                if contenido:
+                    media_payload = {
+                        'media_base64':   base64.b64encode(contenido).decode('utf-8'),
+                        'media_mimetype': mime or 'application/octet-stream',
+                        'media_filename': campaign.media_url.split('/')[-1],
+                    }
+                    print(f"[MassSend] Media desde PocketBase (protegido): "
+                          f"{campaign.media_url.split('/')[-1]} ({mime}, {len(contenido)//1024} KB)")
+                else:
+                    progress.last_error = 'No se pudo descargar el media desde PocketBase.'
+                    progress.save()
+            else:
+                media_payload = {'media_url': campaign.media_url}
+                print(f"[MassSend] Usando media_url: {campaign.media_url}")
 
         # ─── Dividir contactos en lotes ───
         lotes = [contacts[i:i + BATCH_SIZE] for i in range(0, len(contacts), BATCH_SIZE)]

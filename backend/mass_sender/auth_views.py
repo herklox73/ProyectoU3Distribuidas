@@ -14,6 +14,8 @@ from django.views.decorators.http import require_http_methods
 from requests_oauthlib import OAuth2Session
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from email_auth.models import SecurityProfile
+
 logger = logging.getLogger(__name__)
 
 # Permite HTTP en desarrollo local
@@ -111,6 +113,29 @@ def google_callback(request):
             user.save()
             logger.info(f"Nuevo usuario creado desde Google: {email}")
 
+        # Un correo autenticado por Google ya está verificado de por sí,
+        # así que su perfil de seguridad se considera ACTIVE (habilita
+        # usar MFA aunque nunca haya pasado por el registro con código).
+        profile, profile_created = SecurityProfile.objects.get_or_create(
+            user=user, defaults={"status": SecurityProfile.STATUS_ACTIVE},
+        )
+        if not profile_created and profile.status != SecurityProfile.STATUS_ACTIVE:
+            profile.status = SecurityProfile.STATUS_ACTIVE
+            profile.save(update_fields=["status"])
+
+        # Si la cuenta tiene MFA activo, Google solo cuenta como el
+        # primer factor: no se emite JWT todavía. Se guarda el perfil de
+        # Google en la sesión (cookie ya puesta en este dominio) y se
+        # manda al frontend a pedir el código del autenticador; recién
+        # ahí /api/email-auth/auth/google-mfa-verify/ genera el JWT.
+        if profile.mfa_enabled:
+            request.session["pending_google_profile"] = {
+                "email": email, "nombre": nombre, "foto": foto, "google_id": google_id,
+            }
+            logger.info(f"Google requiere segundo factor para: {email}")
+            params = urllib.parse.urlencode({"mfa_required": "1", "email": email})
+            return redirect(f"{settings.FRONTEND_URL}/?{params}")
+
         # Generar JWT con datos de Google incluidos
         refresh = RefreshToken.for_user(user)
         refresh['email']     = email
@@ -162,6 +187,7 @@ def perfil_usuario(request):
             "nombre": token.get("nombre", user.get_full_name()),
             "foto": token.get("foto", ""),
             "google_id": token.get("google_id", ""),
+            "isStaff": user.is_staff,
         })
     except (InvalidToken, TokenError) as e:
         logger.warning(f"Token JWT inválido: {e}")

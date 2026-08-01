@@ -1,0 +1,157 @@
+# MassSend — despliegue en Docker Swarm (tercer parcial).
+#
+# Cumple los requisitos del clúster:
+#   - UNA sola instancia de base de datos (SQLite en el volumen masssend_db,
+#     administrada por el único servicio backend).
+#   - VARIAS réplicas de la aplicación: frontend x3 (Nginx). El puerto 5173
+#     usa la malla de enrutamiento (ingress) de Swarm, que BALANCEA cada
+#     solicitud entre las réplicas por round-robin.
+#   - La consistencia se mantiene porque las réplicas son sin estado: todas
+#     consultan al mismo backend y este a la única base de datos.
+#
+# Las imágenes se construyen antes con: docker compose build
+# Despliegue:   docker swarm init
+#               docker stack deploy --resolve-image never -c stack.yml masssend
+# Evidencias:   docker stack services masssend
+#               docker service ps masssend_frontend
+services:
+
+  frontend:
+    image: whatsapp-frontend:latest
+    ports:
+      - target: 80
+        published: 5173
+        protocol: tcp
+        mode: ingress          # balanceo round-robin entre réplicas
+    networks:
+      - masssend_network
+    deploy:
+      replicas: 3              # ← réplicas de la aplicación
+      restart_policy:
+        condition: any
+        delay: 3s
+      update_config:
+        parallelism: 1
+        delay: 5s
+        order: start-first
+
+  backend:
+    image: whatsapp-backend:latest
+    environment:
+      WHATSAPP_API_URL: "http://whatsapp:3001"
+      OLLAMA_URL: "http://ollama:11434"
+      POCKETBASE_URL: "http://pocketbase:8080"
+      POCKETBASE_PUBLIC_URL: "http://localhost:8090"
+      SQLITE_PATH: "/data/db.sqlite3"   # BD única en volumen persistente
+      DEBUG: "True"
+    env_file:
+      - ./backend/.env
+    ports:
+      - target: 8000
+        published: 8000
+        protocol: tcp
+        mode: ingress
+    volumes:
+      - masssend_db:/data
+      - masssend_media:/app/media
+    networks:
+      - masssend_network
+    deploy:
+      replicas: 1              # una sola instancia: dueña de la BD
+      restart_policy:
+        condition: any
+        delay: 3s
+
+  # Worker: consumidor de la cola de correos (asíncrono). Misma imagen
+  # que "backend" pero corre process_email_queue en vez de gunicorn.
+  email_worker:
+    image: whatsapp-backend:latest
+    command: ["python", "manage.py", "process_email_queue"]
+    environment:
+      WHATSAPP_API_URL: "http://whatsapp:3001"
+      OLLAMA_URL: "http://ollama:11434"
+      POCKETBASE_URL: "http://pocketbase:8080"
+      POCKETBASE_PUBLIC_URL: "http://localhost:8090"
+      SQLITE_PATH: "/data/db.sqlite3"
+      DEBUG: "True"
+    env_file:
+      - ./backend/.env
+    volumes:
+      - masssend_db:/data
+      - masssend_media:/app/media
+    networks:
+      - masssend_network
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 3s
+
+  whatsapp:
+    image: whatsapp-whatsapp:latest
+    environment:
+      PORT: "3001"
+      DJANGO_API_URL: "http://backend:8000"
+    ports:
+      - target: 3001
+        published: 3001
+        protocol: tcp
+        mode: ingress
+    volumes:
+      - masssend_wa_session:/app/auth_info_baileys
+    networks:
+      - masssend_network
+    deploy:
+      replicas: 1              # una sesión de WhatsApp = una instancia
+      restart_policy:
+        condition: any
+        delay: 3s
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - target: 11434
+        published: 11434
+        protocol: tcp
+        mode: ingress
+    volumes:
+      - masssend_ollama_models:/root/.ollama
+    networks:
+      - masssend_network
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 3s
+
+  pocketbase:
+    image: whatsapp-pocketbase:latest
+    environment:
+      PB_SUPERUSER_EMAIL: "admin@masssend.local"
+      PB_SUPERUSER_PASSWORD: "masssend123456"
+    ports:
+      - target: 8080
+        published: 8090
+        protocol: tcp
+        mode: ingress
+    volumes:
+      - masssend_pocketbase_data:/pb/pb_data
+    networks:
+      - masssend_network
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 3s
+
+networks:
+  masssend_network:
+    driver: overlay
+    attachable: true
+
+volumes:
+  masssend_db:
+  masssend_media:
+  masssend_wa_session:
+  masssend_ollama_models:
+  masssend_pocketbase_data:

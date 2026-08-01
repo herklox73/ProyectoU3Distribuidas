@@ -1,9 +1,14 @@
 from django.urls import path
 from . import views
+from . import ai_views
 
 app_name = 'mass_sender'
 
 urlpatterns = [
+    # ── Asistente IA local (Ollama) ───────────────────────────────────────
+    path('api/asistente/chat/', ai_views.api_asistente_chat, name='api_asistente_chat'),
+    path('api/asistente/health/', ai_views.api_asistente_health, name='api_asistente_health'),
+
     # ── Chat ──────────────────────────────────────────────────────────────
     path('chat/', views.chat_view, name='chat'),
     path('chat/leer_mensajes.php', views.api_leer_mensajes, name='api_leer_mensajes'),
@@ -50,6 +55,7 @@ urlpatterns = [
     path('api/campanas/', views.api_campanas_list, name='api_campanas_list'),
     path('api/campanas/<int:pk>/', views.api_campanas_detail, name='api_campanas_detail'),
     path('api/campanas/<int:pk>/ejecutar/', views.api_campanas_ejecutar, name='api_campanas_ejecutar'),
+    path('api/campanas/<int:pk>/media/', views.api_campanas_media, name='api_campanas_media'),
 
     # Contactos
     path('api/contactos/', views.api_contactos_list, name='api_contactos_list'),

@@ -800,6 +800,7 @@ def api_me(request):
                     'email': user.email,
                     'nombre': token.get('nombre', user.get_full_name()),
                     'foto': token.get('foto', ''),
+                    'isStaff': user.is_staff,
                 }
             })
     except (InvalidToken, TokenError):
@@ -808,7 +809,11 @@ def api_me(request):
     if request.user.is_authenticated:
         return JsonResponse({
             'authenticated': True,
-            'user': {'username': request.user.username, 'email': request.user.email}
+            'user': {
+                'username': request.user.username,
+                'email': request.user.email,
+                'isStaff': request.user.is_staff,
+            }
         })
     return JsonResponse({'authenticated': False}, status=401)
 
@@ -865,7 +870,15 @@ def api_campanas_list(request):
                     status='draft',
                 )
                 if media_file:
-                    campana.media_file = media_file
+                    # Almacenamiento distribuido: la foto/video se guarda en
+                    # PocketBase y la campaña conserva solo la URL pública.
+                    # Si PocketBase no responde, respaldo en media/ local.
+                    from .pocketbase_media import subir_media_campana
+                    pb_url = subir_media_campana(media_file, campaign_id=campana.id, title=campana.name)
+                    if pb_url:
+                        campana.media_url = pb_url
+                    else:
+                        campana.media_file = media_file
                     campana.save()
             return JsonResponse({'success': True, 'id': campana.id}, status=201)
         except Exception as e:
@@ -894,7 +907,16 @@ def api_campanas_detail(request, pk):
             except Exception:
                 pass
         elif campana.media_url:
-            media_effective = campana.media_url
+            from .pocketbase_media import es_url_pocketbase
+            if es_url_pocketbase(campana.media_url):
+                # Archivo protegido en PocketBase: el navegador debe pasar
+                # por el endpoint autenticado del backend (nunca URL directa).
+                media_effective = request.build_absolute_uri(
+                    f'/whatsapp/api/campanas/{campana.id}/media/'
+                )
+                media_file_name = campana.media_url.split('/')[-1]
+            else:
+                media_effective = campana.media_url
         return JsonResponse({
             'id': campana.id,
             'nombre': campana.name,
@@ -930,7 +952,13 @@ def api_campanas_detail(request, pk):
                 campana.target_tags      = _get('target_tags', campana.target_tags) or None
                 campana.media_url        = _get('media_url',   campana.media_url)   or None
                 if media_file:
-                    campana.media_file = media_file
+                    from .pocketbase_media import subir_media_campana
+                    pb_url = subir_media_campana(media_file, campaign_id=campana.id, title=campana.name)
+                    if pb_url:
+                        campana.media_url = pb_url
+                        campana.media_file = None  # el archivo vive en PocketBase
+                    else:
+                        campana.media_file = media_file
                 campana.save()
             return JsonResponse({'success': True})
         except Exception as e:
@@ -944,9 +972,38 @@ def api_campanas_detail(request, pk):
     return JsonResponse({'error': 'Método no permitido'}, status=405)
 
 
+def api_campanas_media(request, pk):
+    """
+    Entrega el archivo (foto/video) de una campaña almacenado en PocketBase.
+    Protección de archivos: la colección es privada, por lo que la URL de
+    PocketBase no funciona directamente; SOLO este endpoint, que valida al
+    usuario autenticado (sesión o JWT), puede entregar el contenido.
+    """
+    from django.http import HttpResponse
+    from .pocketbase_media import descargar_media, es_url_pocketbase
+
+    if not _get_user(request):
+        return JsonResponse({'error': 'No autenticado'}, status=401)
+    try:
+        campana = Campaign.objects.get(pk=pk)
+    except Campaign.DoesNotExist:
+        return JsonResponse({'error': 'No encontrada'}, status=404)
+    if not campana.media_url or not es_url_pocketbase(campana.media_url):
+        return JsonResponse({'error': 'La campaña no tiene archivo en PocketBase.'}, status=404)
+
+    contenido, content_type = descargar_media(campana.media_url)
+    if contenido is None:
+        return JsonResponse({'error': 'No fue posible obtener el archivo desde PocketBase.'}, status=502)
+    response = HttpResponse(contenido, content_type=content_type)
+    filename = campana.media_url.split('/')[-1]
+    response['Content-Disposition'] = f'inline; filename="{filename}"'
+    return response
+
+
 @csrf_exempt
 def api_campanas_ejecutar(request, pk):
-    if not _get_user(request):
+    user = _get_user(request)
+    if not user:
         return JsonResponse({'error': 'No autenticado'}, status=401)
     if request.method != 'POST':
         return JsonResponse({'error': 'Método no permitido'}, status=405)
@@ -971,6 +1028,20 @@ def api_campanas_ejecutar(request, pk):
         campaign_lock = get_campaign_lock(campana.id)
         if not campaign_lock.acquire(blocking=False):
             return JsonResponse({'success': False, 'error': 'La campaña ya está siendo ejecutada'})
+
+        # Cobro de créditos: 1 crédito = 1 mensaje. Los admins (staff)
+        # no consumen créditos. Si no alcanza el saldo, se libera el
+        # lock recién adquirido y se corta antes de lanzar el hilo.
+        if not user.is_staff:
+            from billing.services import wallet_service
+            from billing.utils.errors import AppError
+            try:
+                wallet_service.spend_credits(
+                    user, len(contact_ids), reason=f'Campaña "{campana.name}" (#{campana.id})',
+                )
+            except AppError as e:
+                campaign_lock.release()
+                return JsonResponse({'success': False, 'error': e.message}, status=402)
 
         def hilo_target(cid, cids, lock):
             try:

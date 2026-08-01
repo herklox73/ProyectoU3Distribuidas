@@ -32,6 +32,7 @@ EXPOSE 8000
 
 # Script de arranque
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+# Quitar finales de línea de Windows (CRLF) para que Linux pueda ejecutarlo
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 
 CMD ["/entrypoint.sh"]

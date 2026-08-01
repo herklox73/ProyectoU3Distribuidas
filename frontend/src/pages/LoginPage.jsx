@@ -1,25 +1,34 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
 
-export default function LoginPage() {
-  const { login }               = useAuth()
+export default function LoginPage({ onRequireMfa, onGoToRegister, onGoToForgotPassword }) {
+  const { login, requireGoogleMfa } = useAuth()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError]       = useState('')
   const [loading, setLoading]   = useState(false)
 
-  // Capturar JWT que llega desde Google OAuth en la URL
+  // Capturar el resultado del login con Google en la URL: o bien un
+  // JWT ya listo (cuenta sin MFA), o un aviso de que falta el segundo
+  // factor (cuenta con MFA activo, ver mass_sender.auth_views.google_callback).
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
-    const token  = params.get('token')
-    const nombre = params.get('nombre')
-    const foto   = params.get('foto')
-    const email  = params.get('email')
-    const err    = params.get('error')
+    const token       = params.get('token')
+    const nombre      = params.get('nombre')
+    const foto        = params.get('foto')
+    const email       = params.get('email')
+    const err         = params.get('error')
+    const mfaRequired = params.get('mfa_required')
 
     if (err) {
       setError('Error al autenticar con Google. Intenta de nuevo.')
       window.history.replaceState({}, '', window.location.pathname)
+      return
+    }
+
+    if (mfaRequired === '1' && email) {
+      window.history.replaceState({}, '', window.location.pathname)
+      requireGoogleMfa(email)
       return
     }
 
@@ -39,6 +48,10 @@ export default function LoginPage() {
     setLoading(true)
     try {
       const result = await login(username, password)
+      if (result.requiresMfa) {
+        onRequireMfa?.(result.email)
+        return
+      }
       if (!result.success) setError(result.error || 'Credenciales incorrectas')
     } catch {
       setError('Error de conexión con el servidor')
@@ -130,6 +143,29 @@ export default function LoginPage() {
             {loading ? 'Iniciando sesión...' : 'Iniciar sesión'}
           </button>
         </form>
+
+        {(onGoToForgotPassword || onGoToRegister) && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 14 }}>
+            {onGoToForgotPassword && (
+              <button
+                type="button"
+                onClick={onGoToForgotPassword}
+                style={{ background: 'none', border: 'none', color: '#128c4a', fontWeight: 600, fontSize: '0.78rem', cursor: 'pointer', padding: 0, textDecoration: 'underline' }}
+              >
+                ¿Olvidaste tu contraseña?
+              </button>
+            )}
+            {onGoToRegister && (
+              <button
+                type="button"
+                onClick={onGoToRegister}
+                style={{ background: 'none', border: 'none', color: '#128c4a', fontWeight: 600, fontSize: '0.78rem', cursor: 'pointer', padding: 0, textDecoration: 'underline' }}
+              >
+                Crear cuenta nueva
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Separador */}
         <div style={{ display: 'flex', alignItems: 'center', margin: '20px 0', gap: 10 }}>

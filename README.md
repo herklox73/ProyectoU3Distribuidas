@@ -210,3 +210,42 @@ type backend\masssend.log
 # Linux/Mac
 tail -f backend/masssend.log
 ```
+
+---
+
+## Tercer parcial — Docker, Swarm, IA local y PocketBase
+
+### Ejecución con Docker Compose (desarrollo)
+
+```powershell
+docker compose up --build -d
+docker exec -it masssend-ollama ollama pull qwen2.5:0.5b   # solo la primera vez
+```
+
+Servicios: frontend (http://localhost:5173), backend Django (8000), WhatsApp/Baileys (3001), Ollama (11434) y PocketBase (8090). La base de datos `backend/db.sqlite3`, la carpeta `backend/media/` y la sesión de WhatsApp se montan desde el disco.
+
+### Ejecución con Docker Swarm (clúster con réplicas y balanceo)
+
+```powershell
+docker compose build                       # construir las imágenes
+docker swarm init                          # solo la primera vez
+docker compose -f stack.yml config | docker stack deploy --resolve-image never -c - masssend
+docker exec -it $(docker ps -q -f name=masssend_ollama) ollama pull qwen2.5:0.5b
+```
+
+Evidencias del clúster:
+
+```powershell
+docker stack services masssend       # servicios y réplicas (frontend 3/3)
+docker service ps masssend_frontend  # las 3 réplicas activas
+docker service logs -f masssend_frontend   # el balanceo: las peticiones llegan a réplicas distintas
+```
+
+La malla de enrutamiento (ingress) de Swarm reparte cada solicitud del puerto 5173 entre las 3 réplicas de Nginx; el backend es una sola instancia dueña de la única base de datos (volumen `masssend_db`), lo que garantiza la consistencia.
+
+Para apagar: `docker stack rm masssend` (o `docker compose down` en modo Compose).
+
+### Novedades del tercer parcial
+
+- **Asistente IA local (Ollama, `qwen2.5:0.5b`)**: página "Asistente IA" — guía de uso del sistema y redacción de mensajes de campaña. Comunicación síncrona (RPC sobre HTTP) con timeout y medición de latencia.
+- **Almacenamiento protegido en PocketBase**: las fotos/videos de campañas se guardan en la colección privada `campaign_media` (archivo `protected`). La URL directa es rechazada; el archivo solo se entrega por `GET /whatsapp/api/campanas/<id>/media/` con usuario autenticado (sesión o JWT). Respaldo automático en disco local si PocketBase no está disponible.

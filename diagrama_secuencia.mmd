@@ -1,0 +1,61 @@
+sequenceDiagram
+    actor U as Usuario
+    participant F as Frontend
+    participant B as Backend
+    participant D as BaseDatos
+    participant P as PocketBase
+    participant O as Ollama
+    participant W as WhatsApp
+    participant T as Telefono
+
+    rect rgb(235, 245, 255)
+    Note over U,D: Autenticación (síncrona)
+    U->>F: credenciales
+    F->>B: POST /login
+    B->>D: verificar contraseña
+    D-->>B: OK, requiere TOTP
+    B-->>F: "falta código 2FA"
+    U->>F: código TOTP
+    F->>B: POST /verificar-totp
+    B->>D: validar código
+    D-->>B: válido
+    B-->>F: sesión abierta (JWT)
+    end
+
+    rect rgb(235, 255, 240)
+    Note over U,O: Asistente IA (RPC síncrono)
+    U->>F: "redáctame un mensaje"
+    F->>B: POST /asistente/chat
+    B->>O: POST /api/generate (espera respuesta)
+    O-->>B: texto generado + latencia
+    B-->>F: respuesta del asistente
+    end
+
+    rect rgb(255, 245, 230)
+    Note over U,P: Crear campaña con archivo (síncrono)
+    U->>F: crear campaña + foto/video
+    F->>B: POST /campanas (multipart)
+    B->>P: subir archivo (colección privada, protegido)
+    P-->>B: referencia del archivo
+    B->>D: guardar campaña
+    D-->>B: OK
+    B-->>F: campaña creada
+    end
+
+    rect rgb(255, 235, 235)
+    Note over U,T: Ejecutar campaña (asíncrono desde aquí)
+    U->>F: ejecutar campaña
+    F->>B: POST /campanas/id/ejecutar
+    B->>D: validar y descontar créditos (transacción)
+    B->>P: descargar archivo con token temporal
+    P-->>B: contenido del archivo
+    B->>W: encolar mensajes (no espera respuesta)
+    B-->>F: "ejecución iniciada"
+    Note right of W: cola asíncrona por lotes
+    W->>T: enviar mensaje + archivo
+    T-->>W: entregado
+    W->>B: webhook resultado (asíncrono)
+    B->>D: actualizar progreso
+    B->>F: WebSocket: progreso en vivo (asíncrono)
+    F->>U: barra de progreso actualizada
+    end

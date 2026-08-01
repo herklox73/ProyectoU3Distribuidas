@@ -52,6 +52,13 @@ const MODULOS = [
     color: '#25d366',
     bg: 'rgba(37,211,102,0.06)',
   },
+  {
+    id: 'creditos',
+    titulo: 'Créditos',
+    desc: 'Compra créditos con PayPal o PayPhone para enviar campañas.',
+    color: '#f59e0b',
+    bg: 'rgba(245,158,11,0.1)',
+  },
 ]
 
 export default function InicioPage({ onNavegar }) {

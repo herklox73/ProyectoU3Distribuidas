@@ -31,6 +31,10 @@ urlpatterns = [
     path('admin/cambiar-numero/', admin.site.admin_view(ms_views.cambiar_numero_admin_view), name='admin_cambiar_numero'),
     path('admin/', admin.site.urls),
     path('whatsapp/', include('mass_sender.urls')),
+    # Verificación de correo (Gmail), MFA y recuperación de contraseña
+    path('api/email-auth/', include('email_auth.urls')),
+    # Créditos y pasarelas de pago (PayPal + PayPhone)
+    path('api/billing/', include('billing.urls')),
     # JWT con usuario/contraseña (para Postman)
     path('api/token/', TokenObtainPairView.as_view(), name='token_obtain'),
     path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
