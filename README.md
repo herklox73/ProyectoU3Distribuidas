@@ -243,9 +243,14 @@ Servicios: frontend (http://localhost:5173), backend Django (8000), WhatsApp/Bai
 ```powershell
 docker compose build                       # construir las imágenes
 docker swarm init                          # solo la primera vez
-docker compose -f stack.yml config | docker stack deploy --resolve-image never -c - masssend
+docker stack deploy --resolve-image never -c stack.yml masssend
 docker exec -it $(docker ps -q -f name=masssend_ollama) ollama pull qwen2.5:0.5b
 ```
+
+> Nota: no uses `docker compose config | docker stack deploy -c - masssend`. Al re-serializar el
+> archivo, `docker compose config` convierte los puertos publicados en texto entre comillas y
+> Swarm los rechaza (`services.frontend.ports.0.published must be a integer`). Despliega siempre
+> directo desde `stack.yml`, como en el comando de arriba.
 
 Evidencias del clúster:
 
@@ -258,6 +263,12 @@ docker service logs -f masssend_frontend   # el balanceo: las peticiones llegan 
 La malla de enrutamiento (ingress) de Swarm reparte cada solicitud del puerto 5173 entre las 3 réplicas de Nginx; el backend es una sola instancia dueña de la única base de datos (volumen `masssend_db`), lo que garantiza la consistencia.
 
 Para apagar: `docker stack rm masssend` (o `docker compose down` en modo Compose).
+
+### Reproducción de las pruebas del artículo científico
+
+El detalle de las 15 pruebas funcionales evaluadas en el artículo (procedimiento exacto,
+comandos y métrica asociada a cada una) está documentado en
+[`REPRODUCIR_PRUEBAS.md`](./REPRODUCIR_PRUEBAS.md).
 
 ### Novedades del tercer parcial
 

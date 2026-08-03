@@ -37,9 +37,11 @@ frontend/dist/
 *.ppt
 
 # ── Notas, guías y prompts internos (solo en el equipo local) ─
-# El README.md sí se sube; el resto de .md sueltos en la raíz, no.
+# El README.md y la guía de reproducción de pruebas sí se suben;
+# el resto de .md sueltos en la raíz, no.
 /*.md
 !/README.md
+!/REPRODUCIR_PRUEBAS.md
 
 # ── Imágenes/diagramas de documentación en la raíz ───────
 # (los recursos reales de la app, dentro de frontend/backend, no se tocan)
