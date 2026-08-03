@@ -60,9 +60,3 @@ docker exec -it $(docker ps -q -f name=masssend_ollama) ollama pull qwen2.5:0.5b
 El fragmento exacto usado para medir la latencia de la llamada RPC síncrona está en
 `backend/mass_sender/ai_service.py` (ver Código 2 del artículo) y se basa en
 `time.perf_counter()` alrededor de la llamada `POST /api/generate` a Ollama.
-
-## Evidencias
-
-Las capturas de pantalla correspondientes a cada prueba (28 figuras numeradas) están
-insertadas en el informe técnico del proyecto, en el mismo orden en que aparecen las
-pruebas de este documento.
