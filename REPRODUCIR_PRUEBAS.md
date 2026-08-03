@@ -64,5 +64,5 @@ El fragmento exacto usado para medir la latencia de la llamada RPC síncrona est
 ## Evidencias
 
 Las capturas de pantalla correspondientes a cada prueba (28 figuras numeradas) están
-insertadas en el informe técnico del proyecto y siguen el orden y los pasos descritos en
-`Guia_Capturas_y_Diagrama.md`, incluido en este mismo repositorio.
+insertadas en el informe técnico del proyecto, en el mismo orden en que aparecen las
+pruebas de este documento.
