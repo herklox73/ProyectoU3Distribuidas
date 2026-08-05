@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 import os
 
@@ -52,6 +53,15 @@ class Campaign(models.Model):
         ('cancelled', 'Cancelada'),
     ]
 
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='campaigns',
+        verbose_name="Dueño",
+        help_text="Usuario propietario de la campaña. Requerido para aislar el acceso entre cuentas.",
+    )
     name = models.CharField(max_length=150, verbose_name="Nombre de la Campaña")
     message_template = models.TextField(verbose_name="Plantilla del Mensaje", help_text="Usa {{variable}} para personalizar.")
     media_url = models.URLField(max_length=500, blank=True, null=True, verbose_name="URL de Imagen/Adjunto (opcional)")

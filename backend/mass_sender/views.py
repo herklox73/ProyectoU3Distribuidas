@@ -47,6 +47,18 @@ def _get_user(request):
     return None
 
 
+def _es_dueno_o_staff(user, campana):
+    """
+    True si el usuario puede acceder a la campaña: es el dueño registrado
+    o tiene permisos de staff/superusuario (panel administrativo).
+    Corrige el IDOR reportado en api_campanas_media, donde cualquier
+    usuario autenticado podía leer el archivo de cualquier campaña.
+    """
+    if user.is_staff:
+        return True
+    return campana.owner_id == user.id
+
+
 def normalizar_telefono(raw):
     """
     Limpia y normaliza un número al formato E.164 sin el +.
@@ -822,11 +834,15 @@ def api_me(request):
 
 @csrf_exempt
 def api_campanas_list(request):
-    if not _get_user(request):
+    user = _get_user(request)
+    if not user:
         return JsonResponse({'error': 'No autenticado'}, status=401)
 
     if request.method == 'GET':
-        campanas = Campaign.objects.all().order_by('-created_at')
+        # Aislamiento por dueño: cada usuario ve solo sus propias campañas,
+        # salvo el staff/superusuario, que ve todas (panel administrativo).
+        campanas = Campaign.objects.all() if user.is_staff else Campaign.objects.filter(owner=user)
+        campanas = campanas.order_by('-created_at')
         data = []
         for c in campanas:
             try:
@@ -863,6 +879,7 @@ def api_campanas_list(request):
                 media_file = None
             with transaction.atomic():
                 campana = Campaign.objects.create(
+                    owner=user,
                     name=data.get('nombre', '').strip(),
                     message_template=data.get('mensaje', '').strip(),
                     target_tags=data.get('target_tags', '').strip() or None,
@@ -889,12 +906,15 @@ def api_campanas_list(request):
 
 @csrf_exempt
 def api_campanas_detail(request, pk):
-    if not _get_user(request):
+    user = _get_user(request)
+    if not user:
         return JsonResponse({'error': 'No autenticado'}, status=401)
     try:
         campana = Campaign.objects.get(pk=pk)
     except Campaign.DoesNotExist:
         return JsonResponse({'error': 'No encontrada'}, status=404)
+    if not _es_dueno_o_staff(user, campana):
+        return JsonResponse({'error': 'No autorizado'}, status=403)
 
     if request.method == 'GET':
         # media_effective: archivo subido tiene prioridad sobre URL manual
@@ -982,12 +1002,15 @@ def api_campanas_media(request, pk):
     from django.http import HttpResponse
     from .pocketbase_media import descargar_media, es_url_pocketbase
 
-    if not _get_user(request):
+    user = _get_user(request)
+    if not user:
         return JsonResponse({'error': 'No autenticado'}, status=401)
     try:
         campana = Campaign.objects.get(pk=pk)
     except Campaign.DoesNotExist:
         return JsonResponse({'error': 'No encontrada'}, status=404)
+    if not _es_dueno_o_staff(user, campana):
+        return JsonResponse({'error': 'No autorizado'}, status=403)
     if not campana.media_url or not es_url_pocketbase(campana.media_url):
         return JsonResponse({'error': 'La campaña no tiene archivo en PocketBase.'}, status=404)
 
@@ -1013,6 +1036,8 @@ def api_campanas_ejecutar(request, pk):
         import os
 
         campana = Campaign.objects.get(pk=pk)
+        if not _es_dueno_o_staff(user, campana):
+            return JsonResponse({'error': 'No autorizado'}, status=403)
 
         if campana.status == 'running':
             return JsonResponse({'success': False, 'error': 'La campaña ya está en ejecución'})
