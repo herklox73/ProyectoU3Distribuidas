@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import axios from '../api/axios'
 import { formatearTelefono } from '../utils/telefono'
+import { IconoExcel, IconoPDF, Girando } from '../components/reportes/IconosArchivo'
 import { ActividadDiaria, DonaEstados, Embudo, PorHora, TablaCampanas } from '../components/reportes/Graficos'
 
 const ESTADO_LABEL = {
@@ -164,24 +165,30 @@ export default function ReportesPage() {
             Estados de entrega, lectura y rendimiento de tus envíos
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           {[
-            { tipo: 'pdf', label: 'Descargar PDF' },
-            { tipo: 'excel', label: 'Descargar Excel' },
-          ].map(b => (
-            <button key={b.tipo} onClick={() => descargar(b.tipo)} disabled={!!descargando}
+            { tipo: 'pdf', label: 'PDF', color: '#d93025', Icono: IconoPDF },
+            { tipo: 'excel', label: 'Excel', color: '#1d7f45', Icono: IconoExcel },
+          ].map(({ tipo, label, color, Icono }) => (
+            <button key={tipo} className="btn-descarga" title={`Descargar ${label}`} aria-label={`Descargar ${label}`} onClick={() => descargar(tipo)} disabled={!!descargando}
               style={{
-                display: 'inline-flex', alignItems: 'center', gap: 7,
-                padding: '8px 16px', background: '#fff', color: '#0b0b0b',
-                border: '1px solid #d9d8d3', borderRadius: 8, fontWeight: 600, fontSize: '0.82rem',
-                cursor: descargando ? 'wait' : 'pointer', opacity: descargando && descargando !== b.tipo ? 0.5 : 1,
+                '--acento': color,
+                display: 'inline-flex', alignItems: 'center', gap: 8,
+                padding: '7px 16px 7px 10px', background: '#fff', color: '#0b0b0b',
+                border: '1px solid #e4e3df', borderRadius: 10, textAlign: 'left',
+                cursor: descargando ? 'wait' : 'pointer',
+                opacity: descargando && descargando !== tipo ? 0.5 : 1,
               }}>
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" />
-              </svg>
-              {descargando === b.tipo ? 'Generando…' : b.label}
+              {descargando === tipo ? <Girando color={color} /> : <Icono />}
+              <span style={{ fontWeight: 600, fontSize: '0.86rem' }}>{label}</span>
             </button>
           ))}
+          <style>{`
+            .btn-descarga { transition: border-color .15s, box-shadow .15s, transform .15s; box-shadow: 0 1px 2px #0000000d; }
+            .btn-descarga:not(:disabled):hover { border-color: var(--acento); box-shadow: 0 4px 14px #00000014; transform: translateY(-1px); }
+            .btn-descarga:not(:disabled):active { transform: translateY(0); }
+            .btn-descarga:focus-visible { outline: 2px solid var(--acento); outline-offset: 2px; }
+          `}</style>
         </div>
       </div>
       {errorDescarga && (
