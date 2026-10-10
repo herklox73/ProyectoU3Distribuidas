@@ -41,6 +41,7 @@ from .internal_auth import internal_headers
 from django.db import transaction
 from django.conf import settings
 from .models import Contact, Message, ApiProvider
+from .telefonos import normalizar_telefono, normalizar_o_igual
 
 
 # ─── Gateway: abstracción del transporte hacia WhatsApp ──────────────────────
@@ -129,6 +130,8 @@ class MessageService:
           4. Actualizar estado a 'sent' o dejar 'pending' si Node falla
         """
 
+        numero = normalizar_o_igual(numero)
+
         # Paso 1: contacto (operación idempotente dentro de la transacción)
         contact, _ = Contact.objects.get_or_create(
             owner=owner,
@@ -215,6 +218,13 @@ class ContactService:
                 errores += 1
                 detalle.append({'fila': i, 'estado': 'error', 'mensaje': 'Teléfono vacío'})
                 continue
+
+            telefono_norm, tel_err = normalizar_telefono(telefono)
+            if tel_err:
+                errores += 1
+                detalle.append({'fila': i, 'telefono': telefono, 'estado': 'error', 'mensaje': tel_err[:80]})
+                continue
+            telefono = telefono_norm
 
             try:
                 # Savepoint individual por fila: un error en fila 5 no deshace la 1-4

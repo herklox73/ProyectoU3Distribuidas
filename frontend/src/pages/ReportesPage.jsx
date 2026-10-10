@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import axios from '../api/axios'
+import { formatearTelefono } from '../utils/telefono'
 
 const ESTADO_LABEL = {
   sent: 'Enviado',
@@ -243,7 +244,7 @@ export default function ReportesPage() {
                     return (
                       <tr key={m.id} style={{ borderBottom: '1px solid #f8f9fa' }}>
                         <td style={{ padding: '10px 16px', fontWeight: 600, fontSize: '0.83rem' }}>{m.nombre}</td>
-                        <td style={{ padding: '10px 16px', fontFamily: 'monospace', fontSize: '0.8rem', color: '#555' }}>+{m.telefono}</td>
+                        <td style={{ padding: '10px 16px', fontSize: '0.8rem', color: '#4b5563', whiteSpace: 'nowrap' }}>{formatearTelefono(m.telefono)}</td>
                         <td style={{ padding: '10px 16px', fontSize: '0.83rem', color: m.campana ? '#333' : '#ccc' }}>{m.campana || '—'}</td>
 
                         <td style={{ padding: '10px 16px', fontSize: '0.83rem', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.mensaje}</td>

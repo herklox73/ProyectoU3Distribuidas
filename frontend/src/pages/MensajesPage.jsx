@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { sileo } from 'sileo'
 import axios from '../api/axios'
+import { formatearTelefono } from '../utils/telefono'
 
 const STATUS_LABEL = { sent: 'Enviado', delivered: 'Entregado', read: 'Leído', failed: 'Fallido', pending: 'Pendiente' }
 const STATUS_COLOR = {
@@ -172,7 +173,7 @@ export default function MensajesPage() {
                         style={{ width: 15, height: 15, accentColor: '#ef4444', cursor: 'pointer' }} />
                     </td>
                     <td style={{ padding: '10px 16px', fontWeight: 600, fontSize: '0.83rem' }}>{m.nombre}</td>
-                    <td style={{ padding: '10px 16px', fontFamily: 'monospace', fontSize: '0.78rem', color: '#555' }}>+{m.telefono}</td>
+                    <td style={{ padding: '10px 16px', fontSize: '0.8rem', color: '#4b5563', whiteSpace: 'nowrap' }}>{formatearTelefono(m.telefono)}</td>
                     <td style={{ padding: '10px 16px' }}>
                       <span style={{
                         padding: '2px 8px', borderRadius: 20, fontSize: '0.72rem', fontWeight: 700,

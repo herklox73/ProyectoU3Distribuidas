@@ -21,6 +21,7 @@ from datetime import datetime, timedelta
 from .models import Contact, Message, ApiProvider, Campaign, CampaignProgress
 from .services import default_message_service
 from .internal_auth import internal_headers, is_internal_request, make_ws_ticket
+from .telefonos import normalizar_telefono
 
 def _whatsapp_url(path):
     """Devuelve la URL completa del servicio WhatsApp API."""
@@ -69,80 +70,6 @@ def _es_dueno_o_staff(user, campana):
     return campana.owner_id == user.id
 
 
-def normalizar_telefono(raw):
-    """
-    Limpia y normaliza un número al formato E.164 sin el +.
-
-    Reglas Ecuador (caso principal):
-      - Móvil local  09XXXXXXXX  (10 dígitos)  → 5939XXXXXXXX  ✓
-      - Fijo  02-07XXXXXXX        (8-9 dígitos) → RECHAZADO
-      - Ya con código 5939XXXXXXXX (12 dígitos) → ✓
-      - Ya con código 5932-5938XX               → RECHAZADO (fijo)
-
-    Números internacionales (no Ecuador):
-      - Deben tener mínimo 11 dígitos (código de país + número móvil).
-        Ej: Colombia +573XXXXXXXXX (12d), EEUU +1XXXXXXXXXX (11d).
-      - Números cortos sin código de país → RECHAZADOS.
-
-    Devuelve (telefono_limpio, error_msg).  error_msg es None si está ok.
-    """
-    if not raw:
-        return '', 'Teléfono vacío'
-
-    raw_str = str(raw).strip()
-
-    # 1. Detectar notación científica (ej: "1.3071E+12")
-    if re.search(r'[Ee][+\-]?\d', raw_str):
-        return '', 'Número en notación científica — revisa el formato del CSV'
-
-    # 2. Quitar todo excepto dígitos y '+'
-    limpio = re.sub(r'[^\d+]', '', raw_str)
-
-    # 3. Quitar el + inicial si existe
-    if limpio.startswith('+'):
-        limpio = limpio[1:]
-
-    # 4. Caracteres no numéricos que quedaron
-    if not limpio.isdigit():
-        return '', 'Teléfono contiene caracteres inválidos'
-
-    # 5. Número local Ecuador (empieza con 0, 8-10 dígitos)
-    if re.match(r'^0\d{7,9}$', limpio):
-        sin_cero = limpio[1:]
-        if not sin_cero.startswith('9'):
-            return '', (
-                f'Número fijo ({limpio[:3]}...) — los fijos no reciben WhatsApp. '
-                f'Los móviles ecuatorianos empiezan con 09XXXXXXXX.'
-            )
-        limpio = '593' + sin_cero  # → 5939XXXXXXXX (12 dígitos)
-
-    # 6. Número con código Ecuador
-    if limpio.startswith('593'):
-        if not limpio.startswith('5939'):
-            return '', (
-                f'Número fijo de Ecuador ({limpio[:5]}...) — '
-                f'los fijos no reciben WhatsApp. Solo móviles 5939XXXXXXXX.'
-            )
-        if len(limpio) != 12:
-            return '', (
-                f'Móvil Ecuador inválido: {len(limpio)} dígitos '
-                f'(se esperan exactamente 12: 5939XXXXXXXX).'
-            )
-        return limpio, None   # ✓ Ecuatoriano válido
-
-    # 7. Número internacional (no Ecuador)
-    #    Mínimo 11 dígitos: código de país (1-3 d) + número móvil (8+ d)
-    #    Máximo 15 dígitos (límite E.164)
-    if len(limpio) < 11:
-        return '', (
-            f'Número demasiado corto ({len(limpio)} dígitos). '
-            f'Para Ecuador usa 09XXXXXXXX. '
-            f'Para otros países incluye el código de país (ej: 573... Colombia, 1... EEUU).'
-        )
-    if len(limpio) > 15:
-        return '', f'Número demasiado largo ({len(limpio)} dígitos, máximo 15).'
-
-    return limpio, None
 
 @staff_member_required
 @xframe_options_exempt
@@ -1207,6 +1134,10 @@ def api_contactos_list(request):
             telefono = data.get('telefono', '').strip()
             if not telefono:
                 return JsonResponse({'success': False, 'error': 'El teléfono es requerido'}, status=400)
+            # 0987654321, 987654321 o +593 0987654321 -> 593987654321
+            telefono, tel_err = normalizar_telefono(telefono)
+            if tel_err:
+                return JsonResponse({'success': False, 'error': tel_err}, status=400)
             with transaction.atomic():
                 contact, created = Contact.objects.update_or_create(
                     owner=user,
@@ -1236,6 +1167,14 @@ def api_contactos_detail(request, pk):
     if request.method == 'PUT':
         try:
             data = json.loads(request.body)
+            if 'telefono' in data:
+                nuevo_tel, tel_err = normalizar_telefono(data.get('telefono', ''))
+                if tel_err:
+                    return JsonResponse({'success': False, 'error': tel_err}, status=400)
+                duplicado = Contact.objects.filter(owner=user, phone_number=nuevo_tel).exclude(pk=contacto.pk).exists()
+                if duplicado:
+                    return JsonResponse({'success': False, 'error': 'Ya tienes otro contacto con ese número.'}, status=400)
+                contacto.phone_number = nuevo_tel
             with transaction.atomic():
                 contacto.full_name = data.get('nombre', contacto.full_name)
                 contacto.tags = data.get('tags', contacto.tags) or None

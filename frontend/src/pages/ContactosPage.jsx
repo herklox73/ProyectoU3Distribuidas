@@ -1,6 +1,19 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { sileo } from 'sileo'
 import axios from '../api/axios'
+import FlagEC from '../components/FlagEC'
+import { formatearTelefono } from '../utils/telefono'
+
+// ── Número del formulario (parte local, sin +593) ──────────────────────────
+// Acepta 0987654321, 987654321 o incluso 593987654321 y devuelve siempre los
+// 9 dígitos del celular (987654321). El 0 inicial NO va después del +593:
+// con él, WhatsApp acepta el envío pero el mensaje nunca llega.
+function localDesdeEntrada(raw) {
+  let d = String(raw || '').replace(/\D/g, '')
+  if (d.startsWith('593') && d.length >= 12) d = d.slice(3)
+  return d.replace(/^0+/, '')
+}
+const localValido = (local) => /^9\d{8}$/.test(local)
 
 // ── Validación de teléfono (igual que en ImportarContactosPage) ────────────
 function normalizarTelefono(raw) {
@@ -10,6 +23,9 @@ function normalizarTelefono(raw) {
   let limpio = s.replace(/[^\d+]/g, '')
   if (limpio.startsWith('+')) limpio = limpio.slice(1)
   if (!/^\d+$/.test(limpio)) return { ok: false, tel: '', err: 'Caracteres inválidos' }
+  // +593 0987654321 (el 0 sobra) y 987654321 (sin 0 ni código) -> 593987654321
+  if (/^5930\d{9}$/.test(limpio)) limpio = '593' + limpio.slice(4)
+  else if (/^9\d{8}$/.test(limpio)) limpio = '593' + limpio
   if (/^0\d{7,9}$/.test(limpio)) {
     const sinCero = limpio.slice(1)
     if (!sinCero.startsWith('9')) return { ok: false, tel: '', err: 'Número fijo — no recibe WhatsApp' }
@@ -78,6 +94,7 @@ export default function ContactosPage() {
   const [tagsDisponibles, setTagsDisponibles] = useState([])
   const [seleccion, setSeleccion]   = useState(new Set())  // IDs seleccionados
   const [modal, setModal]           = useState(null) // 'crear' | 'importar' | 'csv-preview'
+  const [editId, setEditId]         = useState(null) // id del contacto en edición (null = nuevo)
   const [form, setForm]             = useState({ telefono: '', nombre: '', tags: '' })
   const [telefonoLocal, setTelefonoLocal] = useState('')
   const [guardando, setGuardando]   = useState(false)
@@ -175,16 +192,37 @@ export default function ContactosPage() {
     })
   }
 
+  const abrirNuevo = () => {
+    setEditId(null); setForm({ telefono: '', nombre: '', tags: '' }); setTelefonoLocal(''); setMsg(''); setModal('crear')
+  }
+
+  const abrirEdicion = (c) => {
+    setEditId(c.id)
+    setForm({ telefono: c.telefono, nombre: c.nombre || '', tags: c.tags || '' })
+    setTelefonoLocal(String(c.telefono || '').startsWith('593') ? localDesdeEntrada(c.telefono) : String(c.telefono || ''))
+    setMsg('')
+    setModal('crear')
+  }
+
   const guardarContacto = async () => {
-    const localLimpio = telefonoLocal.replace(/\D/g, '')
-    if (!localLimpio) { setMsg('El teléfono es obligatorio'); return }
-    const numCompleto = '593' + localLimpio
+    const local = localDesdeEntrada(telefonoLocal)
+    if (!local) { setMsg('Escribe el número de celular.'); return }
+    if (!localValido(local)) { setMsg('El celular debe tener 9 dígitos y empezar con 9, por ejemplo 987654321.'); return }
+    const numCompleto = '593' + local
     setGuardando(true)
     try {
-      await axios.post('/whatsapp/api/contactos/', { ...form, telefono: numCompleto })
+      const datos = { nombre: form.nombre, tags: form.tags, telefono: numCompleto }
+      if (editId) {
+        await axios.put(`/whatsapp/api/contactos/${editId}/`, datos)
+      } else {
+        await axios.post('/whatsapp/api/contactos/', datos)
+      }
       setModal(null)
       cargar(page)
-      sileo.success({ title: 'Contacto agregado', description: form.nombre || `+${numCompleto}` })
+      sileo.success({
+        title: editId ? 'Contacto actualizado' : 'Contacto agregado',
+        description: form.nombre || formatearTelefono(numCompleto),
+      })
     } catch (e) {
       const errMsg = e.response?.data?.error || 'Error al guardar'
       setMsg(errMsg)
@@ -260,7 +298,7 @@ export default function ContactosPage() {
           <button onClick={() => { setModal('importar'); setMsg(''); setImportResult(null); setCsvArchivo(null); setCsvParsed(null) }} style={{ padding: '8px 18px', background: '#6366f1', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: '0.85rem' }}>
             Importar CSV
           </button>
-          <button onClick={() => { setModal('crear'); setForm({ telefono: '', nombre: '', tags: '' }); setTelefonoLocal(''); setMsg('') }} style={{ padding: '8px 18px', background: '#25d366', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: '0.85rem' }}>
+          <button onClick={abrirNuevo} style={{ padding: '8px 18px', background: '#25d366', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: '0.85rem' }}>
             + Agregar contacto
           </button>
         </div>
@@ -331,7 +369,12 @@ export default function ContactosPage() {
                       style={{ width: 15, height: 15, accentColor: '#6366f1', cursor: 'pointer' }} />
                   </td>
                   <td style={{ padding: '10px 14px', fontWeight: 600, fontSize: '0.85rem' }}>{c.nombre || '—'}</td>
-                  <td style={{ padding: '10px 14px', fontFamily: 'monospace', fontSize: '0.82rem', color: '#555' }}>+{c.telefono}</td>
+                  <td style={{ padding: '10px 14px', fontSize: '0.84rem', color: '#4b5563', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                      {String(c.telefono || '').startsWith('593') && <FlagEC width={18} />}
+                      {formatearTelefono(c.telefono)}
+                    </span>
+                  </td>
                   <td style={{ padding: '10px 14px' }}>
                     {c.tags ? c.tags.split(',').map(t => (
                       <span key={t} style={{ display: 'inline-block', padding: '1px 8px', borderRadius: 20, fontSize: '0.7rem', background: '#f3e8ff', color: '#7c3aed', marginRight: 3 }}>
@@ -351,6 +394,9 @@ export default function ContactosPage() {
                   <td style={{ padding: '10px 14px', fontSize: '0.78rem', color: '#aaa' }}>{c.created_at}</td>
                   <td style={{ padding: '10px 14px' }}>
                     <div style={{ display: 'flex', gap: 6 }}>
+                      <button onClick={() => abrirEdicion(c)} style={{ padding: '4px 10px', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer', border: 'none', borderRadius: 6, background: '#e0e7ff', color: '#3730a3' }}>
+                        Editar
+                      </button>
                       <button onClick={() => toggleOptout(c)} style={{
                         padding: '4px 10px', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer',
                         border: 'none', borderRadius: 6,
@@ -385,7 +431,7 @@ export default function ContactosPage() {
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 }}>
           <div style={{ background: '#fff', borderRadius: 14, padding: 28, width: 420, boxShadow: '0 8px 32px rgba(0,0,0,0.15)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 20 }}>
-              <h2 style={{ fontSize: '1rem', fontWeight: 700, margin: 0 }}>Agregar contacto</h2>
+              <h2 style={{ fontSize: '1rem', fontWeight: 700, margin: 0 }}>{editId ? 'Editar contacto' : 'Agregar contacto'}</h2>
               <button onClick={() => setModal(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.2rem', color: '#888' }}>✕</button>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -393,17 +439,25 @@ export default function ContactosPage() {
                 <label style={labelStyle}>Teléfono</label>
                 <div style={{ display: 'flex', border: '1.5px solid #e5e7eb', borderRadius: 8, overflow: 'hidden' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 12px', background: '#f9fafb', borderRight: '1px solid #e5e7eb', fontSize: '0.88rem', fontWeight: 600, color: '#374151', whiteSpace: 'nowrap', userSelect: 'none' }}>
-                    <span>🇪🇨</span>
+                    <FlagEC width={20} />
                     <span>+593</span>
                   </div>
                   <input
                     style={{ flex: 1, padding: '9px 12px', border: 'none', outline: 'none', fontSize: '0.88rem', boxSizing: 'border-box' }}
                     value={telefonoLocal}
                     onChange={e => setTelefonoLocal(e.target.value.replace(/\D/g, ''))}
-                    placeholder="999999999"
-                    maxLength={10}
+                    placeholder="987654321"
+                    maxLength={12}
+                    inputMode="numeric"
                   />
                 </div>
+                {(() => {
+                  const local = localDesdeEntrada(telefonoLocal)
+                  if (!telefonoLocal) return <p style={{ fontSize: '0.75rem', color: '#9ca3af', marginTop: 6 }}>Los 9 dígitos del celular, sin el 0 inicial.</p>
+                  return localValido(local)
+                    ? <p style={{ fontSize: '0.75rem', color: '#047857', marginTop: 6 }}>Se guardará como {formatearTelefono('593' + local)}{telefonoLocal.startsWith('0') ? ' (quitamos el 0 inicial)' : ''}</p>
+                    : <p style={{ fontSize: '0.75rem', color: '#b45309', marginTop: 6 }}>Faltan o sobran dígitos: el celular tiene 9 y empieza con 9.</p>
+                })()}
               </div>
               <div>
                 <label style={labelStyle}>Nombre (opcional)</label>
@@ -417,7 +471,7 @@ export default function ContactosPage() {
               <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
                 <button onClick={() => setModal(null)} style={{ padding: '9px 20px', background: '#f3f4f6', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}>Cancelar</button>
                 <button onClick={guardarContacto} disabled={guardando} style={{ padding: '9px 22px', background: '#25d366', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 700 }}>
-                  {guardando ? 'Guardando...' : 'Guardar'}
+                  {guardando ? 'Guardando...' : (editId ? 'Guardar cambios' : 'Guardar')}
                 </button>
               </div>
             </div>

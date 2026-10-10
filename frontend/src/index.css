@@ -1,7 +1,17 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* Los controles de formulario no heredan la fuente por defecto */
+button, input, select, textarea { font: inherit; }
+
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  /* Figtree: sans geométrica y cálida, muy legible en tablas y formularios.
+     Los números usan cifras de ancho fijo para que los teléfonos y conteos
+     queden alineados en columna. */
+  font-family: 'Figtree Variable', 'Segoe UI', system-ui, sans-serif;
+  font-feature-settings: 'tnum' 1;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color: #1f2937;
   background: #f0f2f5;
   height: 100vh;
   overflow: hidden;

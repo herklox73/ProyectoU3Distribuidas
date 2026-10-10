@@ -14,6 +14,9 @@ function normalizarTelefono(raw) {
   let limpio = s.replace(/[^\d+]/g, '')
   if (limpio.startsWith('+')) limpio = limpio.slice(1)
   if (!/^\d+$/.test(limpio)) return { ok: false, tel: '', err: 'Caracteres inválidos' }
+  // +593 0987654321 (el 0 sobra) y 987654321 (sin 0 ni código) -> 593987654321
+  if (/^5930\d{9}$/.test(limpio)) limpio = '593' + limpio.slice(4)
+  else if (/^9\d{8}$/.test(limpio)) limpio = '593' + limpio
 
   // Local Ecuador (empieza con 0)
   if (/^0\d{7,9}$/.test(limpio)) {

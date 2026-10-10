@@ -29,6 +29,7 @@ def get_campaign_lock(campaign_id: int) -> threading.Lock:
         return _campaign_locks[campaign_id]
 
 from .internal_auth import internal_headers
+from .telefonos import normalizar_o_igual
 
 
 def _whatsapp_url(path):
@@ -677,7 +678,9 @@ def _send_campaign_background(campaign_id, contact_ids):
                 delivery_status = 'failed'
                 wpp_msg_id      = None
                 try:
-                    payload = {"user_id": campaign.owner_id, "number": contact.phone_number,
+                    # Se normaliza al enviar: un número guardado como 5930987... (con el
+                    # 0 de más) "se enviaba" pero WhatsApp nunca lo entregaba.
+                    payload = {"user_id": campaign.owner_id, "number": normalizar_o_igual(contact.phone_number),
                                "message": mensaje_final, **media_payload}
                     res = requests.post(_whatsapp_url('/api/send'), json=payload, headers=internal_headers(), timeout=90)
 
