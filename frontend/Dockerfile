@@ -9,11 +9,13 @@ COPY . .
 # Variables de compilación de Vite (opcionales):
 #   VITE_ENABLE_AI=false  oculta el Asistente IA (despliegue liviano en AWS)
 #   VITE_ENABLE_CREDITS=false  oculta la página de Créditos/pagos
+#   VITE_ENABLE_GOOGLE=false   oculta el botón "Continuar con Google"
 #   VITE_WS_URL           dirección pública del WebSocket del gateway
 ARG VITE_ENABLE_AI=true
 ARG VITE_ENABLE_CREDITS=true
+ARG VITE_ENABLE_GOOGLE=true
 ARG VITE_WS_URL=ws://localhost:3001
-ENV VITE_ENABLE_AI=$VITE_ENABLE_AI VITE_ENABLE_CREDITS=$VITE_ENABLE_CREDITS VITE_WS_URL=$VITE_WS_URL
+ENV VITE_ENABLE_AI=$VITE_ENABLE_AI VITE_ENABLE_CREDITS=$VITE_ENABLE_CREDITS VITE_ENABLE_GOOGLE=$VITE_ENABLE_GOOGLE VITE_WS_URL=$VITE_WS_URL
 RUN npm run build
 
 FROM nginx:alpine

@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
 
+const GOOGLE_ENABLED = import.meta.env.VITE_ENABLE_GOOGLE !== 'false'
+
 export default function LoginPage({ onRequireMfa, onGoToRegister, onGoToForgotPassword }) {
   const { login, requireGoogleMfa } = useAuth()
   const [username, setUsername] = useState('')
@@ -167,6 +169,9 @@ export default function LoginPage({ onRequireMfa, onGoToRegister, onGoToForgotPa
           </div>
         )}
 
+        {/* Login con Google: se oculta con VITE_ENABLE_GOOGLE=false (p. ej. en
+            AWS sin dominio, donde Google no permite el inicio de sesión). */}
+        {GOOGLE_ENABLED && (<>
         {/* Separador */}
         <div style={{ display: 'flex', alignItems: 'center', margin: '20px 0', gap: 10 }}>
           <div style={{ flex: 1, height: 1, background: '#e5e7eb' }} />
@@ -195,6 +200,7 @@ export default function LoginPage({ onRequireMfa, onGoToRegister, onGoToForgotPa
           </svg>
           Continuar con Google
         </button>
+        </>)}
       </div>
     </div>
   )

@@ -21,6 +21,7 @@ services:
       args:
         VITE_ENABLE_AI: "false"
         VITE_ENABLE_CREDITS: "false"
+        VITE_ENABLE_GOOGLE: "false"
         VITE_WS_URL: "ws://${PUBLIC_IP:?Define PUBLIC_IP con la IP publica del servidor}/ws/"
     container_name: masssend-frontend
     ports:
