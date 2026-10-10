@@ -154,7 +154,7 @@ class ContactAdmin(ModelAdmin):
 
     def fecha_registro(self, obj):
         if obj.created_at:
-            return obj.created_at.strftime('%d/%m/%Y %H:%M')
+            return timezone.localtime(obj.created_at).strftime('%d/%m/%Y %H:%M')
         return '—'
     fecha_registro.short_description = 'Fecha de registro'
     fecha_registro.admin_order_field = 'created_at'
@@ -855,7 +855,7 @@ class CampaignAdmin(ModelAdmin):
             if p.last_error:
                 html += f'<div style="color:#dc3545; font-size:0.82rem; margin-top:10px; padding:8px; background:#fff3cd; border-radius:6px;"><strong>Ultimo error:</strong><br>{p.last_error}</div>'
             if p.finished_at:
-                html += f'<div style="color:#6c757d; font-size:0.78rem; margin-top:8px;">Finalizado: {p.finished_at.strftime("%d/%m/%Y %H:%M:%S")}</div>'
+                html += f'<div style="color:#6c757d; font-size:0.78rem; margin-top:8px;">Finalizado: {timezone.localtime(p.finished_at).strftime("%d/%m/%Y %H:%M:%S")}</div>'
             html += '</div>'
             return mark_safe(html)
         except CampaignProgress.DoesNotExist:

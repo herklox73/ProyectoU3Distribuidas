@@ -103,8 +103,8 @@ def api_leer_mensajes(request):
                 # 'tipo' es el campo que usa el JS para detectar si el mensaje es enviado
                 "tipo":           "enviado" if m.direction == "outbound" else "recibido",
                 "texto":          m.content or "",
-                "fecha":          m.sent_at.strftime('%Y-%m-%d') if m.sent_at else "",
-                "hora":           m.sent_at.strftime('%H:%M') if m.sent_at else "",
+                "fecha":          timezone.localtime(m.sent_at).strftime('%Y-%m-%d') if m.sent_at else "",
+                "hora":           timezone.localtime(m.sent_at).strftime('%H:%M') if m.sent_at else "",
                 # 'status' es el campo que usa el JS para mostrar los ticks
                 "status":         m.delivery_status or "sent",
                 "wpp_message_id": getattr(m, 'wpp_message_id', '') or "",
@@ -613,7 +613,7 @@ def api_reportes(request):
             'campana': campana,
             'mensaje': m.content[:120] if m.content else '',
             'status': m.delivery_status or 'sent',
-            'fecha': m.sent_at.strftime('%d/%m/%Y %H:%M') if m.sent_at else '',
+            'fecha': timezone.localtime(m.sent_at).strftime('%d/%m/%Y %H:%M') if m.sent_at else '',
         })
 
     return JsonResponse({
@@ -810,7 +810,7 @@ def api_campanas_list(request):
                 'mensaje': c.message_template[:80] + '...' if len(c.message_template) > 80 else c.message_template,
                 'target_tags': c.target_tags or '',
                 'scheduled_at': c.scheduled_at.isoformat() if c.scheduled_at else None,
-                'created_at': c.created_at.strftime('%d/%m/%Y %H:%M'),
+                'created_at': timezone.localtime(c.created_at).strftime('%d/%m/%Y %H:%M'),
                 'progreso': progreso,
             })
         return JsonResponse({'campanas': data})
@@ -895,7 +895,7 @@ def api_campanas_detail(request, pk):
             'media_file_url': media_effective,
             'media_file_name': media_file_name,
             'scheduled_at': campana.scheduled_at.isoformat() if campana.scheduled_at else None,
-            'created_at': campana.created_at.strftime('%d/%m/%Y %H:%M'),
+            'created_at': timezone.localtime(campana.created_at).strftime('%d/%m/%Y %H:%M'),
         })
 
     if request.method == 'PUT':
@@ -1086,7 +1086,7 @@ def api_contactos_list(request):
                 'nombre': c.full_name or '',
                 'tags': c.tags or '',
                 'is_opted_out': c.is_opted_out,
-                'created_at': c.created_at.strftime('%d/%m/%Y'),
+                'created_at': timezone.localtime(c.created_at).strftime('%d/%m/%Y'),
             } for c in contactos],
             'total': total,
             'page': page,
@@ -1225,7 +1225,7 @@ def api_mensajes_list(request):
             'direccion': m.direction,
             'status': m.delivery_status,
             'campana': m.campaign.name if m.campaign else '',
-            'fecha': m.sent_at.strftime('%d/%m/%Y %H:%M') if m.sent_at else '',
+            'fecha': timezone.localtime(m.sent_at).strftime('%d/%m/%Y %H:%M') if m.sent_at else '',
         } for m in mensajes],
         'total': total,
         'page': page,

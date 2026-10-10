@@ -77,11 +77,15 @@ export default function ReportesPage() {
   const [hasta, setHasta]       = useState('')
   const [busqueda, setBusqueda] = useState('')
 
-  const hoy = () => new Date().toISOString().slice(0, 10)
+  // Fecha local (toISOString daría la fecha en UTC: después de las 19:00 en
+  // Ecuador ya marcaría el día siguiente)
+  const fechaLocal = (d) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  const hoy = () => fechaLocal(new Date())
   const hace30 = () => {
     const d = new Date()
     d.setDate(d.getDate() - 30)
-    return d.toISOString().slice(0, 10)
+    return fechaLocal(d)
   }
 
   const cargar = async (d = desde, h = hasta) => {

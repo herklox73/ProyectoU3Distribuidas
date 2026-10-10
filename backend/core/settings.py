@@ -166,7 +166,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 # ── Internacionalización ──────────────────────────────────────────
 LANGUAGE_CODE = 'es-es'
-TIME_ZONE = 'America/Lima'
+TIME_ZONE = 'America/Guayaquil'  # Ecuador (UTC-5)
 USE_I18N = True
 USE_TZ = True
 
