@@ -20,6 +20,7 @@ import threading
 from datetime import datetime, timedelta
 from .models import Contact, Message, ApiProvider, Campaign, CampaignProgress
 from .services import default_message_service
+from .internal_auth import internal_headers, is_internal_request, make_ws_ticket
 
 def _whatsapp_url(path):
     """Devuelve la URL completa del servicio WhatsApp API."""
@@ -134,12 +135,15 @@ def normalizar_telefono(raw):
 
     return limpio, None
 
+@staff_member_required
 @xframe_options_exempt
 def chat_view(request):
     provider = ApiProvider.objects.filter(is_active=True).first()
     return render(request, 'mass_sender/chat.html', {'provider': provider})
 
 def api_leer_mensajes(request):
+    if not _get_user(request):
+        return JsonResponse({'error': 'No autenticado'}, status=401)
     provider = ApiProvider.objects.filter(is_active=True).first()
     # Excluir contactos con JIDs invalidos (@lid, @g.us, @newsletter, etc.)
     contacts = Contact.objects.exclude(phone_number__contains='@').order_by('-created_at')
@@ -201,6 +205,8 @@ def api_enviar_whatsapp(request):
     La lógica atómica está en MessageService.enviar_mensaje(), decorada con
     @transaction.atomic. Si el proceso falla a mitad, Django hace rollback.
     """
+    if not _get_user(request):
+        return JsonResponse({'error': 'No autenticado'}, status=401)
     if request.method == 'POST':
         try:
             data   = json.loads(request.body)
@@ -232,6 +238,8 @@ def api_webhook(request):
     get_or_create usa SELECT + INSERT atómico — el ORM garantiza que no
     se creen dos contactos con el mismo número (unique constraint).
     """
+    if not is_internal_request(request):
+        return JsonResponse({'error': 'No autorizado'}, status=403)
     if request.method == 'POST':
         try:
             data   = json.loads(request.body)
@@ -266,6 +274,8 @@ def api_message_ack(request):
     Intenta actualizar por wpp_message_id primero; si no encuentra,
     usa el mensaje saliente mas reciente de ese numero como fallback.
     """
+    if not is_internal_request(request):
+        return JsonResponse({'error': 'No autorizado'}, status=403)
     if request.method != 'POST':
         return JsonResponse({"success": False}, status=405)
 
@@ -336,6 +346,8 @@ def api_send_result(request):
     Llamado por Node.js cuando un mensaje de la cola fue procesado (enviado o fallido).
     Actualiza el estado real del mensaje en Django.
     """
+    if not is_internal_request(request):
+        return JsonResponse({'error': 'No autorizado'}, status=403)
     if request.method != 'POST':
         return JsonResponse({"success": False}, status=405)
     try:
@@ -373,19 +385,33 @@ def dummy_success(request):
 @csrf_exempt
 def api_cambiar_numero(request):
     """Cierra la sesión de WhatsApp en Node.js."""
+    if not _get_user(request):
+        return JsonResponse({'error': 'No autenticado'}, status=401)
     if request.method == 'POST':
         try:
-            requests.post(_whatsapp_url('/api/logout'), timeout=10)
+            requests.post(_whatsapp_url('/api/logout'), headers=internal_headers(), timeout=10)
             return JsonResponse({"success": True})
         except Exception as e:
             return JsonResponse({"success": False, "error": str(e)})
     return JsonResponse({"success": False, "error": "Método no permitido"})
 
 
+def api_ws_ticket(request):
+    """Entrega un ticket de 60 s para abrir el WebSocket del gateway (solo usuarios autenticados)."""
+    user = _get_user(request)
+    if not user:
+        # 200 (no 401) para no disparar el aviso de "sesión expirada" del
+        # frontend mientras el usuario todavía está en la pantalla de login.
+        return JsonResponse({'authenticated': False, 'ticket': None})
+    return JsonResponse({'authenticated': True, 'ticket': make_ws_ticket(user)})
+
+
 def api_qr_status(request):
     """Proxy: devuelve el QR y/o código de vinculación desde Node.js."""
+    if not _get_user(request):
+        return JsonResponse({'error': 'No autenticado'}, status=401)
     try:
-        resp = requests.get(_whatsapp_url('/api/qr'), timeout=5)
+        resp = requests.get(_whatsapp_url('/api/qr'), headers=internal_headers(), timeout=5)
         data = resp.json()
         return JsonResponse(data)
     except Exception:
@@ -395,6 +421,8 @@ def api_qr_status(request):
 @csrf_exempt
 def api_request_pairing(request):
     """Solicita un código de vinculación por número de teléfono a Node.js."""
+    if not _get_user(request):
+        return JsonResponse({'error': 'No autenticado'}, status=401)
     if request.method == 'POST':
         try:
             data  = json.loads(request.body)
@@ -404,6 +432,7 @@ def api_request_pairing(request):
             resp = requests.post(
                 _whatsapp_url('/api/request-pairing'),
                 json={"phone": phone},
+                headers=internal_headers(),
                 timeout=15
             )
             return JsonResponse(resp.json())
@@ -419,7 +448,7 @@ def cambiar_numero_admin_view(request):
 
     # Estado actual
     try:
-        status_resp = requests.get(_whatsapp_url('/api/status'), timeout=3)
+        status_resp = requests.get(_whatsapp_url('/api/status'), headers=internal_headers(), timeout=3)
         context['wa_connected'] = status_resp.json().get('ready', False)
     except Exception:
         context['wa_connected'] = False

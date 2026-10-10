@@ -30,6 +30,7 @@ urlpatterns = [
 
     # ── WhatsApp conexión ─────────────────────────────────────────────────
     path('api/qr-status/', views.api_qr_status, name='api_qr_status'),
+    path('api/ws-ticket/', views.api_ws_ticket, name='api_ws_ticket'),
     path('api/cambiar-numero/', views.api_cambiar_numero, name='api_cambiar_numero'),
     path('api/request-pairing/', views.api_request_pairing, name='api_request_pairing'),
 

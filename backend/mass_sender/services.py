@@ -37,6 +37,7 @@ PRINCIPIOS SOLID APLICADOS:
 """
 
 import requests
+from .internal_auth import internal_headers
 from django.db import transaction
 from django.conf import settings
 from .models import Contact, Message, ApiProvider
@@ -64,6 +65,7 @@ class WhatsAppGateway:
         resp = requests.post(
             f'{self.base_url}/api/send',
             json={'number': number, 'message': message},
+            headers=internal_headers(),
             timeout=20
         )
         resp.raise_for_status()
@@ -71,16 +73,16 @@ class WhatsAppGateway:
 
     def status(self) -> dict:
         """Consulta si WhatsApp está conectado."""
-        resp = requests.get(f'{self.base_url}/api/status', timeout=5)
+        resp = requests.get(f'{self.base_url}/api/status', headers=internal_headers(), timeout=5)
         return resp.json()
 
     def logout(self):
         """Cierra la sesión de WhatsApp en Node.js."""
-        requests.post(f'{self.base_url}/api/logout', timeout=10)
+        requests.post(f'{self.base_url}/api/logout', headers=internal_headers(), timeout=10)
 
     def qr(self) -> dict:
         """Obtiene el QR o código de vinculación actual."""
-        resp = requests.get(f'{self.base_url}/api/qr', timeout=5)
+        resp = requests.get(f'{self.base_url}/api/qr', headers=internal_headers(), timeout=5)
         return resp.json()
 
 

@@ -28,6 +28,9 @@ def get_campaign_lock(campaign_id: int) -> threading.Lock:
             _campaign_locks[campaign_id] = threading.Lock()
         return _campaign_locks[campaign_id]
 
+from .internal_auth import internal_headers
+
+
 def _whatsapp_url(path):
     base = getattr(settings, 'WHATSAPP_API_URL', 'http://localhost:3001').rstrip('/')
     return f"{base}{path}"
@@ -673,7 +676,7 @@ def _send_campaign_background(campaign_id, contact_ids):
                 wpp_msg_id      = None
                 try:
                     payload = {"number": contact.phone_number, "message": mensaje_final, **media_payload}
-                    res = requests.post(_whatsapp_url('/api/send'), json=payload, timeout=90)
+                    res = requests.post(_whatsapp_url('/api/send'), json=payload, headers=internal_headers(), timeout=90)
 
                     if res.status_code == 200:
                         delivery_status = 'pending'  # Node lo actualizará a 'sent'/'failed' via /api/send-result/

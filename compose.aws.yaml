@@ -1,0 +1,126 @@
+# MassSend - despliegue LIVIANO para un servidor pequeño (AWS EC2 t3.micro, 1 GB RAM).
+#
+# Diferencias con compose.yaml:
+#   - SIN Ollama (asistente de IA): necesita varios GB de RAM y no cabe en 1 GB.
+#     El frontend se compila con VITE_ENABLE_AI=false y la página desaparece del menú.
+#   - El frontend se publica en el puerto 80 (http://IP-DEL-SERVIDOR).
+#   - DEBUG desactivado y límites de memoria por servicio.
+#   - Seguridad: el gateway de WhatsApp NO se publica a internet (puerto 3001
+#     cerrado). El navegador usa el WebSocket a través de Nginx (/ws/) con un
+#     ticket firmado, y Django <-> gateway se autentican con INTERNAL_API_TOKEN.
+#
+# Uso en el servidor (ver DESPLIEGUE_AWS.md):
+#   export PUBLIC_IP=$(curl -s https://checkip.amazonaws.com)
+#   (INTERNAL_API_TOKEN y PB_SUPERUSER_PASSWORD van en el archivo .env junto a este compose)
+#   docker compose -f compose.aws.yaml up -d --build
+services:
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_ENABLE_AI: "false"
+        VITE_WS_URL: "ws://${PUBLIC_IP:?Define PUBLIC_IP con la IP publica del servidor}/ws/"
+    container_name: masssend-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - masssend_network
+    restart: unless-stopped
+    mem_limit: 64m
+
+  backend:
+    build:
+      context: ./backend
+    container_name: masssend-backend
+    env_file:
+      - ./backend/.env
+    environment:
+      DEBUG: "False"
+      WHATSAPP_API_URL: "http://whatsapp:3001"
+      POCKETBASE_URL: "http://pocketbase:8080"
+      POCKETBASE_PUBLIC_URL: "http://${PUBLIC_IP}:8090"
+      FRONTEND_URL: "http://${PUBLIC_IP}"
+      CSRF_TRUSTED_ORIGINS: "http://${PUBLIC_IP}"
+      SQLITE_PATH: "/app/data/db.sqlite3"
+      INTERNAL_API_TOKEN: "${INTERNAL_API_TOKEN:?Define INTERNAL_API_TOKEN en .env}"
+      GUNICORN_WORKERS: "2"
+    volumes:
+      - masssend_db:/app/data
+      - ./backend/media:/app/media
+    depends_on:
+      - pocketbase
+    networks:
+      - masssend_network
+    restart: unless-stopped
+    mem_limit: 320m
+
+  email-worker:
+    build:
+      context: ./backend
+    container_name: masssend-email-worker
+    command: ["python", "manage.py", "process_email_queue"]
+    env_file:
+      - ./backend/.env
+    environment:
+      DEBUG: "False"
+      WHATSAPP_API_URL: "http://whatsapp:3001"
+      POCKETBASE_URL: "http://pocketbase:8080"
+      POCKETBASE_PUBLIC_URL: "http://${PUBLIC_IP}:8090"
+      FRONTEND_URL: "http://${PUBLIC_IP}"
+      SQLITE_PATH: "/app/data/db.sqlite3"
+      INTERNAL_API_TOKEN: "${INTERNAL_API_TOKEN:?Define INTERNAL_API_TOKEN en .env}"
+    volumes:
+      - masssend_db:/app/data
+      - ./backend/media:/app/media
+    depends_on:
+      - backend
+    networks:
+      - masssend_network
+    restart: unless-stopped
+    mem_limit: 160m
+
+  whatsapp:
+    build:
+      context: ./backend/whatsapp_api
+    container_name: masssend-whatsapp
+    environment:
+      PORT: "3001"
+      DJANGO_API_URL: "http://backend:8000"
+      INTERNAL_API_TOKEN: "${INTERNAL_API_TOKEN:?Define INTERNAL_API_TOKEN en .env}"
+    # Sin "ports": el 3001 solo es accesible dentro de la red de Docker
+    # (Django y Nginx). El navegador entra por http://IP/ws/
+    volumes:
+      - ./backend/whatsapp_api/auth_info_baileys:/app/auth_info_baileys
+    networks:
+      - masssend_network
+    restart: unless-stopped
+    mem_limit: 256m
+
+  pocketbase:
+    build:
+      context: ./infra/pocketbase
+      args:
+        PB_VERSION: "0.39.8"
+    container_name: masssend-pocketbase
+    environment:
+      PB_SUPERUSER_EMAIL: ${PB_SUPERUSER_EMAIL:-admin@masssend.local}
+      PB_SUPERUSER_PASSWORD: ${PB_SUPERUSER_PASSWORD:?Define PB_SUPERUSER_PASSWORD}
+    ports:
+      - "8090:8080"
+    volumes:
+      - masssend_pocketbase_data:/pb/pb_data
+    networks:
+      - masssend_network
+    restart: unless-stopped
+    mem_limit: 96m
+
+networks:
+  masssend_network:
+    driver: bridge
+
+volumes:
+  masssend_db:
+  masssend_pocketbase_data:

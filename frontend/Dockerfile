@@ -6,6 +6,12 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install
 COPY . .
+# Variables de compilación de Vite (opcionales):
+#   VITE_ENABLE_AI=false  oculta el Asistente IA (despliegue liviano en AWS)
+#   VITE_WS_URL           dirección pública del WebSocket del gateway
+ARG VITE_ENABLE_AI=true
+ARG VITE_WS_URL=ws://localhost:3001
+ENV VITE_ENABLE_AI=$VITE_ENABLE_AI VITE_WS_URL=$VITE_WS_URL
 RUN npm run build
 
 FROM nginx:alpine

@@ -107,7 +107,12 @@ const ICONS = {
   ),
 }
 
-const NAV = [
+// El asistente de IA (Ollama) es opcional. En el despliegue liviano
+// (compose.aws.yaml) se construye con VITE_ENABLE_AI=false y la página
+// desaparece del menú, porque Ollama no cabe en un servidor de 1 GB.
+const AI_ENABLED = import.meta.env.VITE_ENABLE_AI !== 'false'
+
+const NAV_ALL = [
   { id: 'inicio',         label: 'Inicio'              },
   { id: 'chat',           label: 'Chat'                },
   { id: 'campanas',       label: 'Campañas'            },
@@ -122,6 +127,7 @@ const NAV = [
   { id: 'creditos',       label: 'Créditos'            },
   { id: 'asistente',      label: 'Asistente IA'        },
 ]
+const NAV = NAV_ALL.filter(n => AI_ENABLED || n.id !== 'asistente')
 
 // El admin (cualquier cuenta marcada is_staff=True en Django) ve TODO
 // el menú: lo administrativo (reportes, cola de correos) más todo lo
@@ -133,7 +139,7 @@ const NAV = [
 // Los admins no consumen créditos al ejecutar campañas (ver
 // mass_sender/views.py api_campanas_ejecutar), aunque sí puedan ver la
 // página.
-const USER_NAV_IDS  = ['inicio', 'campanas', 'contactos', 'importar', 'mensajes', 'whatsapp', 'notificaciones', 'seguridad', 'creditos', 'asistente']
+const USER_NAV_IDS  = ['inicio', 'campanas', 'contactos', 'importar', 'mensajes', 'whatsapp', 'notificaciones', 'seguridad', 'creditos', 'asistente'].filter(id => AI_ENABLED || id !== 'asistente')
 const ADMIN_NAV_IDS = NAV.map(n => n.id)
 
 function SidebarStatus({ collapsed }) {

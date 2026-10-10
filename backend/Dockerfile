@@ -15,17 +15,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copiar código
 COPY . .
 
-# Variables dummy para el BUILD (Railway inyecta las reales en runtime)
-ENV SECRET_KEY=dummy-collectstatic-key-not-used-in-production
+# Clave temporal SOLO para compilar los archivos estáticos. Se pasa
+# únicamente a ese comando (no queda guardada en la imagen) y el
+# entrypoint se niega a arrancar si no se define una SECRET_KEY real.
+# El superusuario ya no se crea con una contraseña fija: se crea al
+# arrancar solo si se definen DJANGO_SUPERUSER_USERNAME/EMAIL/PASSWORD.
 ENV DEBUG=False
-ENV DJANGO_SUPERUSER_USERNAME=admin
-ENV DJANGO_SUPERUSER_PASSWORD=Admin1234!
-ENV DJANGO_SUPERUSER_EMAIL=admin@example.com
-
-# Ejecutar en build: static files + migraciones + superusuario inicial
-RUN python manage.py collectstatic --noinput
-RUN python manage.py migrate --noinput
-RUN python manage.py createsuperuser --noinput || true
+RUN SECRET_KEY=build-only-collectstatic python manage.py collectstatic --noinput
 
 # Puerto
 EXPOSE 8000

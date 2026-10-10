@@ -190,6 +190,11 @@ WHATSAPP_API_URL = os.environ.get('WHATSAPP_API_URL', 'http://localhost:3000')
 # Comunicación síncrona (RPC sobre HTTP) con el modelo servido por
 # Ollama, según lo visto en clase (ollama-rpc-practica).
 OLLAMA_URL = os.environ.get('OLLAMA_URL', 'http://localhost:11434')
+
+# Secreto compartido entre Django y el gateway de WhatsApp (Node.js).
+# Ver mass_sender/internal_auth.py. Vacío = comprobaciones desactivadas
+# (solo para desarrollo local); en producción es obligatorio.
+INTERNAL_API_TOKEN = os.environ.get('INTERNAL_API_TOKEN', '')
 OLLAMA_MODEL = os.environ.get('OLLAMA_MODEL', 'qwen2.5:0.5b')
 OLLAMA_TIMEOUT_SECONDS = int(os.environ.get('OLLAMA_TIMEOUT_SECONDS', '60'))
 

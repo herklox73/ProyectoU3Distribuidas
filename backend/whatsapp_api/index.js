@@ -19,11 +19,57 @@ app.use(express.json({ limit: '600mb' }));
 app.use(express.urlencoded({ limit: '600mb', extended: true }));
 app.use(cors());
 
+// ─── Seguridad: secreto compartido con Django ─────────────────────────
+// Las rutas REST de este gateway (enviar mensajes, QR, cerrar sesión...)
+// solo deben ser usadas por Django. Django manda la cabecera
+// X-Internal-Token con el valor de INTERNAL_API_TOKEN; si no coincide,
+// se rechaza la petición. Si la variable está vacía (desarrollo local),
+// no se exige, para no romper el flujo de trabajo de siempre.
+const { createHmac, timingSafeEqual } = require('crypto');
+const INTERNAL_TOKEN = process.env.INTERNAL_API_TOKEN || '';
+
+function safeEqual(a, b) {
+    const A = Buffer.from(String(a)), B = Buffer.from(String(b));
+    return A.length === B.length && timingSafeEqual(A, B);
+}
+
+if (!INTERNAL_TOKEN) {
+    console.warn('[Seguridad] INTERNAL_API_TOKEN no definido: API y WebSocket SIN protección (solo para desarrollo local).');
+}
+
+app.use('/api', (req, res, next) => {
+    if (!INTERNAL_TOKEN || safeEqual(req.get('X-Internal-Token') || '', INTERNAL_TOKEN)) return next();
+    return res.status(401).json({ success: false, error: 'No autorizado' });
+});
+
+// Ticket del WebSocket: Django lo firma (HMAC-SHA256) para usuarios con
+// sesión iniciada y dura 60 s. Formato: base64url(json).base64url(firma)
+function verifyWsTicket(ticket) {
+    if (!INTERNAL_TOKEN) return true;
+    if (!ticket || !ticket.includes('.')) return false;
+    const [payload, signature] = ticket.split('.');
+    const expected = createHmac('sha256', INTERNAL_TOKEN).update(payload).digest('base64url');
+    if (!safeEqual(signature, expected)) return false;
+    try {
+        const data = JSON.parse(Buffer.from(payload, 'base64url').toString());
+        return typeof data.exp === 'number' && data.exp * 1000 > Date.now();
+    } catch { return false; }
+}
+
 // ─── Servidor HTTP + WebSocket (mismo puerto) ─────────────────────────
 // Separación de responsabilidades: el servidor HTTP sirve la API REST,
 // el WebSocketServer emite eventos en tiempo real (push) a los clientes React.
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({
+    server,
+    // Solo se aceptan conexiones con un ticket válido emitido por Django
+    verifyClient: (info) => {
+        const url = new URL(info.req.url, 'http://localhost');
+        const ok = verifyWsTicket(url.searchParams.get('ticket'));
+        if (!ok) console.warn('[WS] Conexión rechazada: ticket inválido o vencido');
+        return ok;
+    },
+});
 
 // Broadcast: envía un mensaje a TODOS los clientes React conectados.
 // Principio SRP: esta función solo tiene una responsabilidad — difundir eventos.
@@ -68,7 +114,7 @@ async function notifyDjango(path, body) {
         const djangoUrl = (process.env.DJANGO_API_URL || 'http://localhost:8000').replace(/\/$/, '');
         await fetch(`${djangoUrl}${path}`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...(INTERNAL_TOKEN ? { 'X-Internal-Token': INTERNAL_TOKEN } : {}) },
             body: JSON.stringify(body)
         });
     } catch (e) { /* Django no disponible */ }

@@ -34,12 +34,42 @@ function dispatch(eventName, data) {
   })
 }
 
-function connect() {
+// Seguridad: el gateway solo acepta conexiones con un ticket de 60 s que
+// Django entrega a usuarios con sesión iniciada (/whatsapp/api/ws-ticket/).
+// Mientras no haya sesión, se reintenta sin conectar.
+async function fetchTicket() {
+  try {
+    const headers = {}
+    const jwt = localStorage.getItem('jwt_token')
+    if (jwt) headers['Authorization'] = `Bearer ${jwt}`
+    const r = await fetch('/whatsapp/api/ws-ticket/', { credentials: 'include', headers })
+    if (!r.ok) return null
+    const data = await r.json()
+    return data.authenticated ? (data.ticket || '') : null
+  } catch {
+    return null
+  }
+}
+
+function scheduleRetry(s) {
+  if (!s.timer) {
+    s.timer = setTimeout(() => { s.timer = null; connect() }, RECONNECT_DELAY)
+  }
+}
+
+async function connect() {
   const s = getState()
+  if (s.connecting) return
   if (s.ws && (s.ws.readyState === WebSocket.CONNECTING || s.ws.readyState === WebSocket.OPEN)) return
 
+  s.connecting = true
+  const ticket = await fetchTicket()
+  s.connecting = false
+  if (ticket === null) { scheduleRetry(s); return }
+
+  const url = ticket ? `${WS_URL}${WS_URL.includes('?') ? '&' : '?'}ticket=${encodeURIComponent(ticket)}` : WS_URL
   console.log('[WS] Conectando a', WS_URL)
-  const ws = new WebSocket(WS_URL)
+  const ws = new WebSocket(url)
   s.ws = ws
 
   ws.onopen = () => {
@@ -64,9 +94,7 @@ function connect() {
   ws.onclose = () => {
     console.log('[WS] Cerrada. Reconectando en', RECONNECT_DELAY, 'ms...')
     s.ws = null
-    if (!s.timer) {
-      s.timer = setTimeout(() => { s.timer = null; connect() }, RECONNECT_DELAY)
-    }
+    scheduleRetry(s)
   }
 
   ws.onerror = () => ws.close()

@@ -22,11 +22,13 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from ..services import mfa_service
 from ..utils.errors import AppError
 from ..utils.text import normalize_email
+from ..utils.request_user import require_own_email
 
 
 @api_view(["POST"])
 @authentication_classes([])
 def setup(request):
+    require_own_email(request, request.data.get("email"))
     result = mfa_service.start_mfa_setup(request.data.get("email"))
     return Response(result, status=200)
 
@@ -34,6 +36,7 @@ def setup(request):
 @api_view(["POST"])
 @authentication_classes([])
 def confirm(request):
+    require_own_email(request, request.data.get("email"))
     result = mfa_service.confirm_mfa_setup(
         email=request.data.get("email"),
         code=request.data.get("code"),
@@ -67,6 +70,7 @@ def login_step2(request):
 @api_view(["GET"])
 @authentication_classes([])
 def status(request, email):
+    require_own_email(request, email)
     result = mfa_service.get_mfa_status(email)
     return Response(result, status=200)
 

@@ -4,11 +4,13 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 
 from ..services import attachment_service, notification_service
+from ..utils.request_user import require_user
 
 
 @api_view(["POST"])
 @authentication_classes([])
 def send_notification(request):
+    require_user(request)
     result = notification_service.send_custom_notification(
         to=request.data.get("to"),
         subject=request.data.get("subject"),
@@ -23,6 +25,7 @@ def send_notification(request):
 @authentication_classes([])
 @parser_classes([MultiPartParser, FormParser])
 def send_attachment(request):
+    require_user(request)
     result = attachment_service.send_attachment_notification(
         to=request.data.get("to"),
         subject=request.data.get("subject"),
