@@ -132,7 +132,28 @@ function nuevoIdMensaje() {
     return '3EB0' + require('crypto').randomBytes(9).toString('hex').toUpperCase();
 }
 function authDir(uid) { return `${AUTH_ROOT}/user_${uid}`; }
-function hasCreds(uid) { return fs.existsSync(`${authDir(uid)}/creds.json`); }
+// Un número está vinculado de verdad solo si WhatsApp aceptó el dispositivo
+// ("account" en creds.json). Un intento de vinculación a medias deja un
+// creds.json sin "account" que antes se tomaba como sesión válida.
+function hasCreds(uid) {
+    try {
+        const c = JSON.parse(fs.readFileSync(`${authDir(uid)}/creds.json`, 'utf8'));
+        return Boolean(c.account && c.me);
+    } catch (_) {
+        return false;
+    }
+}
+
+// Borra las credenciales de un intento de vinculación que no terminó, para
+// que el próximo arranque muestre un QR limpio.
+function limpiarVinculacionIncompleta(uid) {
+    const dir = authDir(uid);
+    if (!fs.existsSync(`${dir}/creds.json`) || hasCreds(uid)) return;
+    for (const f of fs.readdirSync(dir)) {
+        try { fs.rmSync(`${dir}/${f}`, { recursive: true, force: true }); } catch (_) {}
+    }
+    console.log(`[WA ${uid}] Se descartó una vinculación incompleta.`);
+}
 
 function getSession(uid, create = false) {
     uid = String(uid);
@@ -208,6 +229,7 @@ async function startSession(uid) {
             try { waVersion = (await fetchLatestBaileysVersion()).version; } catch (_) {}
         }
         fs.mkdirSync(authDir(uid), { recursive: true });
+        limpiarVinculacionIncompleta(uid);
         const { state, saveCreds } = await useMultiFileAuthState(authDir(uid));
 
         const sock = makeWASocket({
@@ -228,20 +250,9 @@ async function startSession(uid) {
 
             if (qr) {
                 s.currentQR = qr;
-                s.pairingCode = null;
                 s.isReady = false;
                 console.log(`[WA ${uid}] Nuevo código QR disponible`);
                 sendToUser(uid, 'qr_update', { qr, ready: false });
-
-                if (s.pairingPhone) {
-                    try {
-                        s.pairingCode = await sock.requestPairingCode(s.pairingPhone);
-                        s.currentQR = null;
-                    } catch (e) {
-                        console.error(`[WA ${uid}] Error al pedir código:`, e.message);
-                        s.pairingPhone = null;
-                    }
-                }
             }
 
             if (connection === 'close') {
@@ -502,31 +513,11 @@ app.get('/api/qr', async (req, res) => {
     });
 });
 
-app.post('/api/request-pairing', async (req, res) => {
-    const uid = requireUser(req, res); if (!uid) return;
-    const { phone } = req.body;
-    if (!phone) return res.status(400).json({ success: false, error: 'Falta el numero de telefono' });
-
-    const cleanPhone = String(phone).replace(/[^0-9]/g, '');
-    if (cleanPhone.length < 7) return res.status(400).json({ success: false, error: 'Numero invalido' });
-
-    let s = getSession(uid, true);
-    if (s.isReady) return res.status(400).json({ success: false, error: 'Ya tienes un número conectado.' });
-    s.lastInterest = Date.now();
-    s.pairingPhone = cleanPhone;
-    s.pairingCode = null;
-    if (!s.sock) s = await startSession(uid);
-
-    if (s.sock) {
-        try {
-            s.pairingCode = await s.sock.requestPairingCode(cleanPhone);
-            s.currentQR = null;
-            return res.json({ success: true, code: s.pairingCode });
-        } catch (e) {
-            // Puede fallar si el socket aún no está listo: el código llegará con el siguiente QR
-        }
-    }
-    res.json({ success: true, message: 'Número guardado. El código aparecerá en unos segundos.' });
+// Vincular con código de teléfono quedó desactivado: si el intento fallaba,
+// el número quedaba guardado y el QR ya no volvía a aparecer. Se vincula solo
+// con QR (cualquier celular con WhatsApp puede escanearlo).
+app.post('/api/request-pairing', (req, res) => {
+    res.status(410).json({ success: false, error: 'La vinculación por código está desactivada. Usa el código QR.' });
 });
 
 app.post('/api/logout', async (req, res) => {
