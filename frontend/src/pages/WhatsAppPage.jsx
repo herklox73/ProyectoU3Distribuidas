@@ -183,6 +183,14 @@ export default function WhatsAppPage() {
                   <p style={{ fontSize: '0.88rem', fontWeight: 700, color: '#065f46' }}>WhatsApp conectado</p>
                   <p style={{ fontSize: '0.78rem', color: '#888', marginTop: 4 }}>El número está vinculado y listo para enviar mensajes.</p>
                 </div>
+              ) : estado.limit_reached ? (
+                <div style={{ border: '1.5px dashed #fca5a5', borderRadius: 10, padding: '32px 24px', textAlign: 'center', width: '100%' }}>
+                  <div style={{ fontSize: '2rem', marginBottom: 8 }}>⚠️</div>
+                  <p style={{ fontSize: '0.85rem', fontWeight: 700, color: '#991b1b' }}>Servidor lleno</p>
+                  <p style={{ fontSize: '0.78rem', color: '#888', marginTop: 4 }}>
+                    {estado.error || 'Se alcanzó el máximo de números conectados.'} Intenta más tarde o contacta al administrador.
+                  </p>
+                </div>
               ) : estado.has_qr && estado.qr ? (
                 <div>
                   <div ref={qrRef} style={{ padding: 8, border: '1.5px dashed #c4b5fd', borderRadius: 10 }} />

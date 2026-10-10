@@ -585,7 +585,9 @@ def _send_campaign_background(campaign_id, contact_ids):
 
     try:
         campaign = Campaign.objects.get(id=campaign_id)
-        contacts = list(Contact.objects.filter(id__in=contact_ids))
+        # Solo contactos del dueño de la campaña: cada usuario envía a SU
+        # libreta y desde SU número de WhatsApp.
+        contacts = list(Contact.objects.filter(id__in=contact_ids, owner_id=campaign.owner_id))
 
         # ─── Respetar la hora programada ───
         if campaign.scheduled_at:
@@ -675,7 +677,8 @@ def _send_campaign_background(campaign_id, contact_ids):
                 delivery_status = 'failed'
                 wpp_msg_id      = None
                 try:
-                    payload = {"number": contact.phone_number, "message": mensaje_final, **media_payload}
+                    payload = {"user_id": campaign.owner_id, "number": contact.phone_number,
+                               "message": mensaje_final, **media_payload}
                     res = requests.post(_whatsapp_url('/api/send'), json=payload, headers=internal_headers(), timeout=90)
 
                     if res.status_code == 200:
@@ -697,6 +700,7 @@ def _send_campaign_background(campaign_id, contact_ids):
                     print(f"[MassSend] Excepcion → {contact.phone_number}: {e}")
 
                 Message.objects.create(
+                    owner_id=campaign.owner_id,
                     campaign=campaign,
                     phone_number=contact.phone_number,
                     content=mensaje_final,
@@ -753,6 +757,13 @@ class CampaignAdmin(ModelAdmin):
     list_filter = ()
     readonly_fields = ('created_at', 'progreso_info')
     actions = ['execute_campaign_async']
+
+    def save_model(self, request, obj, form, change):
+        # Las campañas creadas desde el panel quedan a nombre de quien las crea
+        # (se enviarán desde su número y a sus contactos).
+        if obj.owner_id is None:
+            obj.owner = request.user
+        super().save_model(request, obj, form, change)
 
     fieldsets = (
         ('Información de la Campaña', {
@@ -898,9 +909,23 @@ class CampaignAdmin(ModelAdmin):
                 finally:
                     lock.release()  # siempre liberar, incluso si hay error
 
+            # Contactos del dueño de ESTA campaña (cada usuario tiene los suyos)
+            if campaign.owner_id is None:
+                campaign.owner = request.user
+                campaign.save(update_fields=['owner'])
+            ids_campana = list(qs.filter(owner_id=campaign.owner_id).values_list('id', flat=True))
+            if not ids_campana:
+                campaign_lock.release()
+                self.message_user(
+                    request,
+                    f"La campaña '{campaign.name}' no tiene contactos activos de su dueño.",
+                    level=messages.WARNING
+                )
+                continue
+
             hilo = threading.Thread(
                 target=hilo_target,
-                args=(campaign.id, contacts, campaign_lock),
+                args=(campaign.id, ids_campana, campaign_lock),
                 daemon=True,
                 name=f'Campaign-{campaign.id}'  # nombre descriptivo para debugging
             )

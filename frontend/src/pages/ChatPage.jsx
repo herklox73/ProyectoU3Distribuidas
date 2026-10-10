@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import axios from '../api/axios'
+import { sileo } from 'sileo'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { useWa } from '../context/WaContext'
 
@@ -102,7 +103,11 @@ export default function ChatPage() {
     }))
 
     try {
-      await axios.post('/whatsapp/chat/enviar_whatsapp.php', { to: activo, message: msg })
+      const { data } = await axios.post('/whatsapp/chat/enviar_whatsapp.php', { to: activo, message: msg })
+      // Cada usuario envía desde su propio número: avisar si aún no lo vinculó
+      if (data && data.success === false) {
+        sileo.error({ title: 'No se envió el mensaje', description: data.error?.message || 'Error al enviar' })
+      }
     } catch (e) {
       console.error('Error enviando:', e)
     } finally {

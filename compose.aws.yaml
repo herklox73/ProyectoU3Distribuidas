@@ -93,6 +93,9 @@ services:
       PORT: "3001"
       DJANGO_API_URL: "http://backend:8000"
       INTERNAL_API_TOKEN: "${INTERNAL_API_TOKEN:?Define INTERNAL_API_TOKEN en .env}"
+      # Cada usuario vincula su propio número; cada número conectado usa
+      # unos 50-80 MB. En una t3.micro caben ~5 (súbelo con una máquina mayor).
+      MAX_WA_SESSIONS: "5"
     # Sin "ports": el 3001 solo es accesible dentro de la red de Docker
     # (Django y Nginx). El navegador entra por http://IP/ws/
     volumes:
@@ -100,7 +103,7 @@ services:
     networks:
       - masssend_network
     restart: unless-stopped
-    mem_limit: 256m
+    mem_limit: 512m
 
   pocketbase:
     build:

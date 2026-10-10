@@ -22,7 +22,17 @@ class ApiProvider(models.Model):
 
 
 class Contact(models.Model):
-    phone_number = models.CharField(max_length=50, unique=True, verbose_name="Número de WhatsApp")
+    # Cada usuario tiene su propia libreta de contactos (y su propio número
+    # de WhatsApp): el mismo teléfono puede existir una vez por dueño.
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='contacts',
+        verbose_name="Dueño",
+    )
+    phone_number = models.CharField(max_length=50, verbose_name="Número de WhatsApp")
     full_name = models.CharField(max_length=150, blank=True, null=True, verbose_name="Nombre Completo")
     tags = models.CharField(max_length=255, blank=True, null=True, help_text="Para segmentar (ej: clientes, leads)", verbose_name="Etiquetas")
     custom_data = models.JSONField(blank=True, null=True, help_text="Variables extra para plantillas", verbose_name="Datos Extra")
@@ -33,6 +43,9 @@ class Contact(models.Model):
         db_table = 'contacts'
         verbose_name = "Contacto"
         verbose_name_plural = "Contactos"
+        constraints = [
+            models.UniqueConstraint(fields=['owner', 'phone_number'], name='unique_contact_per_owner'),
+        ]
 
     def __str__(self):
         return f"{self.full_name or 'Sin nombre'} - {self.phone_number}"
@@ -129,6 +142,15 @@ class Message(models.Model):
         ('failed', 'Fallido'),
     ]
 
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='messages',
+        verbose_name="Dueño",
+        help_text="Usuario dueño del número de WhatsApp por el que pasó el mensaje.",
+    )
     provider = models.ForeignKey(ApiProvider, on_delete=models.SET_NULL, null=True, blank=True, verbose_name="Proveedor")
     campaign = models.ForeignKey(Campaign, on_delete=models.CASCADE, null=True, blank=True, verbose_name="Campaña")
     phone_number = models.CharField(max_length=50, verbose_name="Teléfono Destino/Origen")

@@ -48,6 +48,15 @@ def _get_user(request):
     return None
 
 
+def _internal_owner(data):
+    """Usuario dueño del número de WhatsApp en los avisos que manda el gateway."""
+    from django.contrib.auth import get_user_model
+    uid = data.get('user_id')
+    if uid in (None, ''):
+        return None
+    return get_user_model().objects.filter(pk=uid).first()
+
+
 def _es_dueno_o_staff(user, campana):
     """
     True si el usuario puede acceder a la campaña: es el dueño registrado
@@ -142,11 +151,12 @@ def chat_view(request):
     return render(request, 'mass_sender/chat.html', {'provider': provider})
 
 def api_leer_mensajes(request):
-    if not _get_user(request):
+    user = _get_user(request)
+    if not user:
         return JsonResponse({'error': 'No autenticado'}, status=401)
     provider = ApiProvider.objects.filter(is_active=True).first()
     # Excluir contactos con JIDs invalidos (@lid, @g.us, @newsletter, etc.)
-    contacts = Contact.objects.exclude(phone_number__contains='@').order_by('-created_at')
+    contacts = Contact.objects.filter(owner=user).exclude(phone_number__contains='@').order_by('-created_at')
     mensajes_dict = {}
 
     for contact in contacts:
@@ -155,7 +165,7 @@ def api_leer_mensajes(request):
             num = num[1:]
 
         mensajes_qs = Message.objects.filter(
-            phone_number=contact.phone_number
+            owner=user, phone_number=contact.phone_number
         ).exclude(phone_number__contains='@').order_by('sent_at')
 
         msgs_list = []
@@ -205,7 +215,8 @@ def api_enviar_whatsapp(request):
     La lógica atómica está en MessageService.enviar_mensaje(), decorada con
     @transaction.atomic. Si el proceso falla a mitad, Django hace rollback.
     """
-    if not _get_user(request):
+    user = _get_user(request)
+    if not user:
         return JsonResponse({'error': 'No autenticado'}, status=401)
     if request.method == 'POST':
         try:
@@ -217,7 +228,7 @@ def api_enviar_whatsapp(request):
                 return JsonResponse({"success": False, "error": {"message": "Faltan parámetros"}})
 
             # Delegar al servicio — vista queda limpia y testeable
-            resultado = default_message_service.enviar_mensaje(numero, mensaje)
+            resultado = default_message_service.enviar_mensaje(numero, mensaje, user)
             return JsonResponse(resultado)
 
         except Exception as e:
@@ -250,13 +261,16 @@ def api_webhook(request):
                 return JsonResponse({"success": True, "skipped": True})
 
             if numero and mensaje:
+                owner = _internal_owner(data)   # dueño del número que recibió el mensaje
                 with transaction.atomic():
                     # get_or_create es atómico: no produce duplicados bajo concurrencia
                     contact, _ = Contact.objects.get_or_create(
+                        owner=owner,
                         phone_number=numero,
                         defaults={'full_name': numero}
                     )
                     Message.objects.create(
+                        owner=owner,
                         phone_number=numero,
                         content=mensaje,
                         direction='inbound'
@@ -301,11 +315,15 @@ def api_message_ack(request):
 
         PRIORITY = {'failed': 0, 'pending': 0, 'sent': 1, 'delivered': 2, 'read': 3}
 
+        # Solo se tocan mensajes del dueño del número que envió el aviso
+        owner = _internal_owner(data)
+        base_qs = Message.objects.filter(owner=owner)
+
         updated = 0
 
         # 1. Intentar actualizar por wpp_message_id
         if wpp_id:
-            updated = Message.objects.filter(wpp_message_id=wpp_id).update(delivery_status=status)
+            updated = base_qs.filter(wpp_message_id=wpp_id).update(delivery_status=status)
 
         # 2. Fallback: buscar el mensaje saliente más reciente que aún no haya alcanzado ese estado
         if updated == 0 and number:
@@ -314,7 +332,7 @@ def api_message_ack(request):
             # Preferir mensajes cuyo estado actual sea menor al nuevo (para no retroceder)
             estados_inferiores = [s for s, p in PRIORITY.items() if p < new_p]
 
-            msg = Message.objects.filter(
+            msg = base_qs.filter(
                 phone_number__icontains=number,
                 direction='outbound',
                 delivery_status__in=estados_inferiores if estados_inferiores else ['sent', 'pending']
@@ -322,7 +340,7 @@ def api_message_ack(request):
 
             # Si no encontró con filtro de estado, intentar sin filtro (para el caso de 'failed')
             if not msg and status == 'failed':
-                msg = Message.objects.filter(
+                msg = base_qs.filter(
                     phone_number__icontains=number,
                     direction='outbound'
                 ).order_by('-sent_at').first()
@@ -361,6 +379,7 @@ def api_send_result(request):
 
         # Buscar el mensaje outbound más reciente en estado 'pending' para ese número
         msg = Message.objects.filter(
+            owner=_internal_owner(data),
             phone_number__icontains=number,
             direction='outbound',
             delivery_status='pending'
@@ -385,11 +404,12 @@ def dummy_success(request):
 @csrf_exempt
 def api_cambiar_numero(request):
     """Cierra la sesión de WhatsApp en Node.js."""
-    if not _get_user(request):
+    user = _get_user(request)
+    if not user:
         return JsonResponse({'error': 'No autenticado'}, status=401)
     if request.method == 'POST':
         try:
-            requests.post(_whatsapp_url('/api/logout'), headers=internal_headers(), timeout=10)
+            requests.post(_whatsapp_url('/api/logout'), json={'user_id': user.pk}, headers=internal_headers(), timeout=10)
             return JsonResponse({"success": True})
         except Exception as e:
             return JsonResponse({"success": False, "error": str(e)})
@@ -408,10 +428,11 @@ def api_ws_ticket(request):
 
 def api_qr_status(request):
     """Proxy: devuelve el QR y/o código de vinculación desde Node.js."""
-    if not _get_user(request):
+    user = _get_user(request)
+    if not user:
         return JsonResponse({'error': 'No autenticado'}, status=401)
     try:
-        resp = requests.get(_whatsapp_url('/api/qr'), headers=internal_headers(), timeout=5)
+        resp = requests.get(_whatsapp_url('/api/qr'), params={'user_id': user.pk}, headers=internal_headers(), timeout=10)
         data = resp.json()
         return JsonResponse(data)
     except Exception:
@@ -421,7 +442,8 @@ def api_qr_status(request):
 @csrf_exempt
 def api_request_pairing(request):
     """Solicita un código de vinculación por número de teléfono a Node.js."""
-    if not _get_user(request):
+    user = _get_user(request)
+    if not user:
         return JsonResponse({'error': 'No autenticado'}, status=401)
     if request.method == 'POST':
         try:
@@ -431,7 +453,7 @@ def api_request_pairing(request):
                 return JsonResponse({"success": False, "error": "Falta el número de teléfono"})
             resp = requests.post(
                 _whatsapp_url('/api/request-pairing'),
-                json={"phone": phone},
+                json={"phone": phone, "user_id": user.pk},
                 headers=internal_headers(),
                 timeout=15
             )
@@ -448,7 +470,7 @@ def cambiar_numero_admin_view(request):
 
     # Estado actual
     try:
-        status_resp = requests.get(_whatsapp_url('/api/status'), headers=internal_headers(), timeout=3)
+        status_resp = requests.get(_whatsapp_url('/api/status'), params={'user_id': request.user.pk}, headers=internal_headers(), timeout=3)
         context['wa_connected'] = status_resp.json().get('ready', False)
     except Exception:
         context['wa_connected'] = False
@@ -503,7 +525,7 @@ def import_contacts(request):
                         defaults['custom_data'] = {'notas': notas}
 
                     contact, created = Contact.objects.update_or_create(
-                        phone_number=telefono, defaults=defaults)
+                        owner=request.user, phone_number=telefono, defaults=defaults)
 
                     if created:
                         creados += 1; estado = 'creado'; msg = 'Contacto nuevo'
@@ -582,6 +604,7 @@ def import_contacts(request):
                     defaults['custom_data'] = {'notas': notas}
 
                 contact, created = Contact.objects.update_or_create(
+                    owner=request.user,
                     phone_number=telefono,
                     defaults=defaults,
                 )
@@ -620,7 +643,8 @@ def import_contacts(request):
 # ─────────────────────────────────────────────
 @csrf_exempt
 def api_reportes(request):
-    if not _get_user(request):
+    user = _get_user(request)
+    if not user:
         return JsonResponse({'error': 'No autenticado'}, status=401)
     desde_str  = request.GET.get('desde', '')
     hasta_str  = request.GET.get('hasta', '')
@@ -635,6 +659,7 @@ def api_reportes(request):
         hasta = hoy
 
     qs = Message.objects.filter(
+        owner=user,
         sent_at__date__gte=desde,
         sent_at__date__lte=hasta,
     )
@@ -686,7 +711,7 @@ def api_reportes(request):
     mensajes = []
     for m in ultimos:
         # Buscar nombre de contacto
-        contact = Contact.objects.filter(phone_number=m.phone_number).first()
+        contact = Contact.objects.filter(owner=user, phone_number=m.phone_number).first()
         campana = m.campaign.name if m.campaign else ''
         mensajes.append({
             'id': m.id,
@@ -735,7 +760,8 @@ def api_campaign_progress(request, campaign_id):
     Devuelve el progreso actual de una campaña en formato JSON.
     Útil para hacer polling desde el frontend y mostrar una barra de progreso.
     """
-    if not _get_user(request):
+    user = _get_user(request)
+    if not user:
         return JsonResponse({'error': 'No autenticado'}, status=401)
     from .models import Campaign, CampaignProgress
     try:
@@ -1071,7 +1097,8 @@ def api_campanas_ejecutar(request, pk):
         if campana.status == 'running':
             return JsonResponse({'success': False, 'error': 'La campaña ya está en ejecución'})
 
-        qs = Contact.objects.filter(is_opted_out=False).exclude(phone_number__contains='@')
+        # Se envía a los contactos del dueño de la campaña, desde SU número
+        qs = Contact.objects.filter(owner=campana.owner or user, is_opted_out=False).exclude(phone_number__contains='@')
         if campana.target_tags:
             qs = qs.filter(tags__icontains=campana.target_tags.strip())
 
@@ -1126,7 +1153,8 @@ def api_campanas_ejecutar(request, pk):
 
 @csrf_exempt
 def api_contactos_list(request):
-    if not _get_user(request):
+    user = _get_user(request)
+    if not user:
         return JsonResponse({'error': 'No autenticado'}, status=401)
 
     if request.method == 'GET':
@@ -1136,7 +1164,7 @@ def api_contactos_list(request):
         page = int(request.GET.get('page', 1))
         per_page = 50
 
-        qs = Contact.objects.exclude(phone_number__contains='@').order_by('-created_at')
+        qs = Contact.objects.filter(owner=user).exclude(phone_number__contains='@').order_by('-created_at')
         if busqueda:
             qs = qs.filter(Q(phone_number__icontains=busqueda) | Q(full_name__icontains=busqueda))
         if tag:
@@ -1150,7 +1178,7 @@ def api_contactos_list(request):
         contactos = qs[(page - 1) * per_page: page * per_page]
 
         # Obtener etiquetas únicas para los filtros
-        all_tags_raw = Contact.objects.exclude(tags__isnull=True).exclude(tags='').values_list('tags', flat=True)
+        all_tags_raw = Contact.objects.filter(owner=user).exclude(tags__isnull=True).exclude(tags='').values_list('tags', flat=True)
         tags_set = set()
         for t in all_tags_raw:
             for part in t.split(','):
@@ -1181,6 +1209,7 @@ def api_contactos_list(request):
                 return JsonResponse({'success': False, 'error': 'El teléfono es requerido'}, status=400)
             with transaction.atomic():
                 contact, created = Contact.objects.update_or_create(
+                    owner=user,
                     phone_number=telefono,
                     defaults={
                         'full_name': data.get('nombre', '').strip() or telefono,
@@ -1196,10 +1225,11 @@ def api_contactos_list(request):
 
 @csrf_exempt
 def api_contactos_detail(request, pk):
-    if not _get_user(request):
+    user = _get_user(request)
+    if not user:
         return JsonResponse({'error': 'No autenticado'}, status=401)
     try:
-        contacto = Contact.objects.get(pk=pk)
+        contacto = Contact.objects.get(pk=pk, owner=user)
     except Contact.DoesNotExist:
         return JsonResponse({'error': 'No encontrado'}, status=404)
 
@@ -1226,7 +1256,8 @@ def api_contactos_detail(request, pk):
 @csrf_exempt
 def api_contactos_bulk_delete(request):
     """Elimina múltiples contactos por lista de IDs."""
-    if not _get_user(request):
+    user = _get_user(request)
+    if not user:
         return JsonResponse({'error': 'No autenticado'}, status=401)
     if request.method != 'POST':
         return JsonResponse({'error': 'Método no permitido'}, status=405)
@@ -1235,7 +1266,7 @@ def api_contactos_bulk_delete(request):
         ids = data.get('ids', [])
         if not ids:
             return JsonResponse({'error': 'No se enviaron IDs'}, status=400)
-        deleted, _ = Contact.objects.filter(id__in=ids).delete()
+        deleted, _ = Contact.objects.filter(owner=user, id__in=ids).delete()
         return JsonResponse({'success': True, 'eliminados': deleted})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=500)
@@ -1243,7 +1274,8 @@ def api_contactos_bulk_delete(request):
 
 @csrf_exempt
 def api_contactos_importar(request):
-    if not _get_user(request):
+    user = _get_user(request)
+    if not user:
         return JsonResponse({'error': 'No autenticado'}, status=401)
     if request.method != 'POST':
         return JsonResponse({'error': 'Método no permitido'}, status=405)
@@ -1252,7 +1284,7 @@ def api_contactos_importar(request):
         contactos = data.get('contactos', [])
         resultado = default_message_service.__class__
         from .services import ContactService
-        resultado = ContactService.importar_lote(contactos)
+        resultado = ContactService.importar_lote(contactos, user)
         return JsonResponse({'success': True, **resultado})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=500)
@@ -1261,7 +1293,8 @@ def api_contactos_importar(request):
 # ── Mensajes ──────────────────────────────────────────────────────────────
 
 def api_mensajes_list(request):
-    if not _get_user(request):
+    user = _get_user(request)
+    if not user:
         return JsonResponse({'error': 'No autenticado'}, status=401)
 
     page = int(request.GET.get('page', 1))
@@ -1269,7 +1302,7 @@ def api_mensajes_list(request):
     busqueda = request.GET.get('q', '')
     direccion = request.GET.get('direccion', '')
 
-    qs = Message.objects.exclude(phone_number__contains='@').order_by('-sent_at')
+    qs = Message.objects.filter(owner=user).exclude(phone_number__contains='@').order_by('-sent_at')
     if busqueda:
         qs = qs.filter(Q(phone_number__icontains=busqueda) | Q(content__icontains=busqueda))
     if direccion:
@@ -1282,7 +1315,7 @@ def api_mensajes_list(request):
         'mensajes': [{
             'id': m.id,
             'telefono': m.phone_number,
-            'nombre': Contact.objects.filter(phone_number=m.phone_number).values_list('full_name', flat=True).first() or m.phone_number,
+            'nombre': Contact.objects.filter(owner=user, phone_number=m.phone_number).values_list('full_name', flat=True).first() or m.phone_number,
             'contenido': m.content[:100] if m.content else '',
             'direccion': m.direction,
             'status': m.delivery_status,
@@ -1298,14 +1331,15 @@ def api_mensajes_list(request):
 @csrf_exempt
 @require_http_methods(["POST"])
 def api_mensajes_bulk_delete(request):
-    if not _get_user(request):
+    user = _get_user(request)
+    if not user:
         return JsonResponse({'error': 'No autenticado'}, status=401)
     try:
         data = json.loads(request.body)
         ids = data.get('ids', [])
         if not ids:
             return JsonResponse({'error': 'Sin ids'}, status=400)
-        eliminados, _ = Message.objects.filter(id__in=ids).delete()
+        eliminados, _ = Message.objects.filter(owner=user, id__in=ids).delete()
         return JsonResponse({'eliminados': eliminados})
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)

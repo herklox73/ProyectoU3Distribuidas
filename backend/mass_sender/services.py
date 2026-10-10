@@ -57,32 +57,36 @@ class WhatsAppGateway:
         base = getattr(settings, 'WHATSAPP_API_URL', 'http://localhost:3001').rstrip('/')
         self.base_url = base
 
-    def send(self, number: str, message: str) -> dict:
+    # Cada usuario tiene su propio número: todas las llamadas indican
+    # user_id para que el gateway use la sesión de WhatsApp de ese usuario.
+
+    def send(self, number: str, message: str, user_id) -> dict:
         """
-        Envía un mensaje de texto. Devuelve dict con success, wpp_message_id.
+        Envía un mensaje de texto desde el número del usuario indicado.
+        Devuelve dict con success, wpp_message_id.
         Lanza requests.RequestException si Node.js no está disponible.
         """
         resp = requests.post(
             f'{self.base_url}/api/send',
-            json={'number': number, 'message': message},
+            json={'user_id': user_id, 'number': number, 'message': message},
             headers=internal_headers(),
             timeout=20
         )
         resp.raise_for_status()
         return resp.json()
 
-    def status(self) -> dict:
-        """Consulta si WhatsApp está conectado."""
-        resp = requests.get(f'{self.base_url}/api/status', headers=internal_headers(), timeout=5)
+    def status(self, user_id) -> dict:
+        """Consulta si el WhatsApp del usuario está conectado."""
+        resp = requests.get(f'{self.base_url}/api/status', params={'user_id': user_id}, headers=internal_headers(), timeout=5)
         return resp.json()
 
-    def logout(self):
-        """Cierra la sesión de WhatsApp en Node.js."""
-        requests.post(f'{self.base_url}/api/logout', headers=internal_headers(), timeout=10)
+    def logout(self, user_id):
+        """Cierra la sesión de WhatsApp del usuario en Node.js."""
+        requests.post(f'{self.base_url}/api/logout', json={'user_id': user_id}, headers=internal_headers(), timeout=10)
 
-    def qr(self) -> dict:
-        """Obtiene el QR o código de vinculación actual."""
-        resp = requests.get(f'{self.base_url}/api/qr', headers=internal_headers(), timeout=5)
+    def qr(self, user_id) -> dict:
+        """Obtiene el QR o código de vinculación del usuario."""
+        resp = requests.get(f'{self.base_url}/api/qr', params={'user_id': user_id}, headers=internal_headers(), timeout=10)
         return resp.json()
 
 
@@ -110,7 +114,7 @@ class MessageService:
         self.gateway = gateway or WhatsAppGateway()
 
     @transaction.atomic
-    def enviar_mensaje(self, numero: str, texto: str) -> dict:
+    def enviar_mensaje(self, numero: str, texto: str, owner) -> dict:
         """
         Envía un mensaje y registra la transacción en la base de datos.
 
@@ -127,12 +131,14 @@ class MessageService:
 
         # Paso 1: contacto (operación idempotente dentro de la transacción)
         contact, _ = Contact.objects.get_or_create(
+            owner=owner,
             phone_number=numero,
             defaults={'full_name': numero}
         )
 
         # Paso 2: crear registro con estado inicial
         msg_obj = Message.objects.create(
+            owner=owner,
             phone_number=numero,
             content=texto,
             direction='outbound',
@@ -142,11 +148,24 @@ class MessageService:
         # Paso 3: intentar enviar a Node.js
         wpp_id = None
         try:
-            node_resp = self.gateway.send(numero, texto)
+            node_resp = self.gateway.send(numero, texto, owner.pk)
             wpp_id = node_resp.get('wpp_message_id') or None
             msg_obj.delivery_status = 'sent'
             if wpp_id:
                 msg_obj.wpp_message_id = wpp_id
+            msg_obj.save()
+        except requests.HTTPError as e:
+            # 503 = el número de WhatsApp de ESTE usuario no está vinculado
+            if e.response is not None and e.response.status_code == 503:
+                msg_obj.delivery_status = 'failed'
+                msg_obj.error_log = 'WhatsApp del usuario no conectado'
+                msg_obj.save()
+                return {
+                    'success': False,
+                    'error': {'message': 'Tu WhatsApp no está conectado. Ve a "Conectar WhatsApp" y escanea el QR.'},
+                }
+            print(f'[MessageService] Error del gateway: {e}')
+            msg_obj.delivery_status = 'sent'
             msg_obj.save()
         except Exception as e:
             # Node.js no disponible: el mensaje queda en 'pending'
@@ -174,7 +193,7 @@ class ContactService:
 
     @staticmethod
     @transaction.atomic
-    def importar_lote(contactos: list) -> dict:
+    def importar_lote(contactos: list, owner) -> dict:
         """
         Importa una lista de contactos en una sola transacción.
         Si un contacto falla, la transacción parcial de ese contacto
@@ -201,6 +220,7 @@ class ContactService:
                 # Savepoint individual por fila: un error en fila 5 no deshace la 1-4
                 with transaction.atomic():
                     contact, created = Contact.objects.update_or_create(
+                        owner=owner,
                         phone_number=telefono,
                         defaults={'full_name': nombre or telefono, 'tags': tags}
                     )

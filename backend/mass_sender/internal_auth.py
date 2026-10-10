@@ -50,9 +50,9 @@ def _b64(data: bytes) -> str:
 
 def make_ws_ticket(user) -> str:
     """Ticket firmado (HMAC-SHA256) que autoriza a abrir el WebSocket durante 60 s."""
-    token = _token()
-    if not token:
-        return ''
+    # Sin INTERNAL_API_TOKEN (desarrollo) se firma con una clave fija conocida:
+    # el gateway igual necesita saber qué usuario abre el WebSocket.
+    key = _token() or 'masssend-dev-insecure'
     payload = _b64(json.dumps({'uid': user.pk, 'exp': int(time.time()) + WS_TICKET_TTL_SECONDS}).encode())
-    signature = _b64(hmac.new(token.encode(), payload.encode(), hashlib.sha256).digest())
+    signature = _b64(hmac.new(key.encode(), payload.encode(), hashlib.sha256).digest())
     return f'{payload}.{signature}'

@@ -27,6 +27,10 @@ app.use(cors());
 // no se exige, para no romper el flujo de trabajo de siempre.
 const { createHmac, timingSafeEqual } = require('crypto');
 const INTERNAL_TOKEN = process.env.INTERNAL_API_TOKEN || '';
+// Clave con la que Django firma los tickets del WebSocket. En desarrollo
+// (sin INTERNAL_API_TOKEN) se usa una clave fija conocida: solo sirve para
+// saber qué usuario abrió el WebSocket, no como protección.
+const TICKET_KEY = INTERNAL_TOKEN || 'masssend-dev-insecure';
 
 function safeEqual(a, b) {
     const A = Buffer.from(String(a)), B = Buffer.from(String(b));
@@ -44,69 +48,91 @@ app.use('/api', (req, res, next) => {
 
 // Ticket del WebSocket: Django lo firma (HMAC-SHA256) para usuarios con
 // sesión iniciada y dura 60 s. Formato: base64url(json).base64url(firma)
+// Devuelve el id del usuario dueño del ticket, o null si no es válido.
 function verifyWsTicket(ticket) {
-    if (!INTERNAL_TOKEN) return true;
-    if (!ticket || !ticket.includes('.')) return false;
+    if (!ticket || !ticket.includes('.')) return null;
     const [payload, signature] = ticket.split('.');
-    const expected = createHmac('sha256', INTERNAL_TOKEN).update(payload).digest('base64url');
-    if (!safeEqual(signature, expected)) return false;
+    const expected = createHmac('sha256', TICKET_KEY).update(payload).digest('base64url');
+    if (!safeEqual(signature, expected)) return null;
     try {
         const data = JSON.parse(Buffer.from(payload, 'base64url').toString());
-        return typeof data.exp === 'number' && data.exp * 1000 > Date.now();
-    } catch { return false; }
+        if (typeof data.exp !== 'number' || data.exp * 1000 <= Date.now()) return null;
+        return data.uid != null ? String(data.uid) : null;
+    } catch { return null; }
 }
 
 // ─── Servidor HTTP + WebSocket (mismo puerto) ─────────────────────────
-// Separación de responsabilidades: el servidor HTTP sirve la API REST,
-// el WebSocketServer emite eventos en tiempo real (push) a los clientes React.
 const server = http.createServer(app);
 const wss = new WebSocketServer({
     server,
-    // Solo se aceptan conexiones con un ticket válido emitido por Django
+    // Solo se aceptan conexiones con un ticket válido emitido por Django.
+    // El ticket dice a qué usuario pertenece la conexión.
     verifyClient: (info) => {
         const url = new URL(info.req.url, 'http://localhost');
-        const ok = verifyWsTicket(url.searchParams.get('ticket'));
-        if (!ok) console.warn('[WS] Conexión rechazada: ticket inválido o vencido');
-        return ok;
+        const uid = verifyWsTicket(url.searchParams.get('ticket'));
+        if (!uid) { console.warn('[WS] Conexión rechazada: ticket inválido o vencido'); return false; }
+        info.req.uid = uid;
+        return true;
     },
 });
 
-// Broadcast: envía un mensaje a TODOS los clientes React conectados.
-// Principio SRP: esta función solo tiene una responsabilidad — difundir eventos.
-function broadcast(event, data) {
+// Envía un evento SOLO a las pestañas abiertas del usuario indicado:
+// cada usuario ve únicamente el estado y los mensajes de su propio número.
+function sendToUser(uid, event, data) {
     const payload = JSON.stringify({ event, data, ts: Date.now() });
     wss.clients.forEach(client => {
-        if (client.readyState === 1) { // 1 = OPEN
-            client.send(payload);
-        }
+        if (client.readyState === 1 && client.uid === String(uid)) client.send(payload);
     });
 }
 
-wss.on('connection', (ws) => {
-    console.log('[WS] Cliente React conectado. Total:', wss.clients.size);
-    // Enviar estado actual al cliente recién conectado
+wss.on('connection', (ws, req) => {
+    ws.uid = req.uid;
+    const s = sessions.get(ws.uid);
     ws.send(JSON.stringify({
         event: 'status',
-        data: { ready: isReady, has_qr: currentQR !== null, has_pairing: pairingCode !== null },
+        data: {
+            ready: Boolean(s && s.isReady),
+            has_qr: Boolean(s && s.currentQR),
+            has_pairing: Boolean(s && s.pairingCode),
+        },
         ts: Date.now()
     }));
-    ws.on('close', () => {
-        console.log('[WS] Cliente React desconectado. Total:', wss.clients.size);
-    });
 });
 
-// ─── Estado global ────────────────────────────────────────────────────
-let isReady = false;
-let currentQR = null;
-let pairingCode = null;
-let pairingPhone = null;
-let sock = null;
-let reconnectTimer = null;
+// ─── Sesiones de WhatsApp: UNA POR USUARIO ────────────────────────────
+// Cada usuario del sistema vincula su propio número. Las credenciales de
+// cada uno se guardan en auth_info_baileys/user_<id>/ y cada sesión tiene
+// su propio QR, su propia cola de envío y su propio estado.
+const AUTH_ROOT = './auth_info_baileys';
+const MAX_SESSIONS = parseInt(process.env.MAX_WA_SESSIONS || '10', 10);
+const QR_IDLE_MS = 3 * 60 * 1000; // sin vincular y sin nadie mirando el QR => se detiene
+const sessions = new Map();       // uid -> sesión
+let waVersion = null;
 
-// ─── Cola de envío ────────────────────────────────────────────────────
-const sendQueue = [];
-let queueRunning = false;
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function authDir(uid) { return `${AUTH_ROOT}/user_${uid}`; }
+function hasCreds(uid) { return fs.existsSync(`${authDir(uid)}/creds.json`); }
+
+function getSession(uid, create = false) {
+    uid = String(uid);
+    let s = sessions.get(uid);
+    if (!s && create) {
+        s = {
+            uid, sock: null, isReady: false, currentQR: null,
+            pairingCode: null, pairingPhone: null, reconnectTimer: null,
+            queue: [], queueRunning: false, starting: false,
+            stopped: false, lastInterest: Date.now(),
+        };
+        sessions.set(uid, s);
+    }
+    return s;
+}
+
+function activeSessionCount() {
+    let n = 0;
+    for (const s of sessions.values()) if (s.sock && !s.stopped) n++;
+    return n;
+}
 
 // ─── Notificar a Django ───────────────────────────────────────────────
 async function notifyDjango(path, body) {
@@ -120,33 +146,51 @@ async function notifyDjango(path, body) {
     } catch (e) { /* Django no disponible */ }
 }
 
-// ─── Programar reconexión (única) ─────────────────────────────────────
-function scheduleReconnect(delay = 5000) {
-    if (reconnectTimer) return; // ya hay una reconexión programada
-    console.log(`[WhatsApp] Reconectando en ${delay / 1000}s...`);
-    reconnectTimer = setTimeout(async () => {
-        reconnectTimer = null;
-        await startClient();
+function scheduleReconnect(s, delay = 5000) {
+    if (s.reconnectTimer || s.stopped) return;
+    s.reconnectTimer = setTimeout(async () => {
+        s.reconnectTimer = null;
+        await startSession(s.uid);
     }, delay);
 }
 
-// ─── Crear cliente WhatsApp (Baileys) ─────────────────────────────────
-async function startClient() {
-    // Cerrar socket anterior si existe
-    if (sock) {
-        try { sock.end(new Error('Reiniciando')); } catch (_) {}
-        sock = null;
+// Detiene el socket de una sesión sin borrar sus credenciales.
+function stopSession(s) {
+    s.stopped = true;
+    s.isReady = false;
+    s.currentQR = null;
+    if (s.reconnectTimer) { clearTimeout(s.reconnectTimer); s.reconnectTimer = null; }
+    try { if (s.sock) s.sock.end(new Error('Sesión detenida')); } catch (_) {}
+    s.sock = null;
+}
+
+// ─── Crear / reiniciar la conexión de un usuario ──────────────────────
+async function startSession(uid) {
+    const s = getSession(uid, true);
+    if (s.starting) return s;
+    if (!s.sock && activeSessionCount() >= MAX_SESSIONS) {
+        console.warn(`[WA ${uid}] Límite de ${MAX_SESSIONS} números conectados alcanzado.`);
+        s.limitReached = true;
+        return s;
+    }
+    s.limitReached = false;
+    s.starting = true;
+    s.stopped = false;
+
+    if (s.sock) {
+        try { s.sock.end(new Error('Reiniciando')); } catch (_) {}
+        s.sock = null;
     }
 
     try {
-        // Obtener la versión más reciente de WhatsApp Web
-        const { version } = await fetchLatestBaileysVersion();
-        console.log(`[WhatsApp] Usando versión WA: ${version.join('.')}`);
+        if (!waVersion) {
+            try { waVersion = (await fetchLatestBaileysVersion()).version; } catch (_) {}
+        }
+        fs.mkdirSync(authDir(uid), { recursive: true });
+        const { state, saveCreds } = await useMultiFileAuthState(authDir(uid));
 
-        const { state, saveCreds } = await useMultiFileAuthState('./auth_info_baileys');
-
-        sock = makeWASocket({
-            version,
+        const sock = makeWASocket({
+            ...(waVersion ? { version: waVersion } : {}),
             auth: state,
             printQRInTerminal: false,
             logger: P({ level: 'silent' }),
@@ -155,70 +199,68 @@ async function startClient() {
             defaultQueryTimeoutMs: 60000,
             retryRequestDelayMs: 2000,
         });
+        s.sock = sock;
 
-        // ─── Eventos de conexión ──────────────────────────────────────
         sock.ev.on('connection.update', async (update) => {
+            if (s.sock !== sock) return; // evento de un socket ya reemplazado
             const { connection, lastDisconnect, qr } = update;
 
             if (qr) {
-                currentQR = qr;
-                pairingCode = null;
-                isReady = false;
-                console.log('====================================================');
-                console.log('ESCANEA ESTE CODIGO QR CON TU WHATSAPP');
-                console.log('====================================================');
-                qrcode.generate(qr, { small: true });
-                // Notificar a React via WebSocket: nuevo QR disponible
-                broadcast('qr_update', { qr, ready: false });
+                s.currentQR = qr;
+                s.pairingCode = null;
+                s.isReady = false;
+                console.log(`[WA ${uid}] Nuevo código QR disponible`);
+                sendToUser(uid, 'qr_update', { qr, ready: false });
 
-                if (pairingPhone) {
+                if (s.pairingPhone) {
                     try {
-                        console.log(`[WhatsApp] Solicitando código de vinculación para ${pairingPhone}...`);
-                        const code = await sock.requestPairingCode(pairingPhone);
-                        pairingCode = code;
-                        currentQR = null;
-                        console.log(`[WhatsApp] Código de vinculación: ${code}`);
+                        s.pairingCode = await sock.requestPairingCode(s.pairingPhone);
+                        s.currentQR = null;
                     } catch (e) {
-                        console.error('[WhatsApp] Error al pedir código:', e.message);
-                        pairingPhone = null;
+                        console.error(`[WA ${uid}] Error al pedir código:`, e.message);
+                        s.pairingPhone = null;
                     }
                 }
             }
 
             if (connection === 'close') {
-                isReady = false;
+                s.isReady = false;
                 const error = lastDisconnect?.error;
                 const statusCode = (error instanceof Boom) ? error.output.statusCode : 0;
-
-                // Log detallado del error real
-                console.log(`[WhatsApp] Desconectado | código: ${statusCode} | motivo: ${error?.message || 'desconocido'}`);
+                console.log(`[WA ${uid}] Desconectado | código: ${statusCode} | motivo: ${error?.message || 'desconocido'}`);
+                sendToUser(uid, 'qr_update', { ready: false });
 
                 if (statusCode === DisconnectReason.loggedOut) {
-                    console.log('[WhatsApp] Sesión cerrada. Borrando credenciales...');
-                    try { fs.rmSync('./auth_info_baileys', { recursive: true, force: true }); } catch (_) {}
-                    scheduleReconnect(2000);
+                    // El usuario cerró la sesión desde su celular: borrar credenciales
+                    try { fs.rmSync(authDir(uid), { recursive: true, force: true }); } catch (_) {}
+                    s.currentQR = null;
+                    if (Date.now() - s.lastInterest < QR_IDLE_MS) scheduleReconnect(s, 2000);
+                    else stopSession(s);
                 } else if (statusCode === DisconnectReason.connectionReplaced) {
-                    console.log('[WhatsApp] Conexión reemplazada por otra sesión.');
-                    // No reconectar
+                    // Otra sesión tomó el control: no reconectar
+                } else if (hasCreds(uid) || Date.now() - s.lastInterest < QR_IDLE_MS) {
+                    // Número ya vinculado (o alguien está mirando el QR): reintentar
+                    scheduleReconnect(s, 5000);
                 } else {
-                    scheduleReconnect(5000);
+                    // Nadie escaneó el QR: detener para no gastar memoria
+                    stopSession(s);
                 }
             }
 
             if (connection === 'open') {
-                isReady = true;
-                currentQR = null;
-                pairingCode = null;
-                pairingPhone = null;
-                console.log('[WhatsApp] Conectado exitosamente. Sistema listo.');
-                // Notificar a React via WebSocket: WhatsApp conectado
-                broadcast('wa_connected', { ready: true });
+                s.isReady = true;
+                s.currentQR = null;
+                s.pairingCode = null;
+                s.pairingPhone = null;
+                console.log(`[WA ${uid}] Conectado.`);
+                sendToUser(uid, 'wa_connected', { ready: true });
+                processSendQueue(s);
             }
         });
 
         sock.ev.on('creds.update', saveCreds);
 
-        // ─── Mensajes ENTRANTES → Django ──────────────────────────────
+        // ─── Mensajes ENTRANTES → Django (con el dueño del número) ─────
         sock.ev.on('messages.upsert', async ({ messages, type }) => {
             if (type !== 'notify') return;
             for (const msg of messages) {
@@ -231,11 +273,8 @@ async function startClient() {
                              msg.message?.extendedTextMessage?.text || '';
                 if (!body) continue;
 
-                console.log(`[WhatsApp] Mensaje entrante de ${number}: ${body.substring(0, 60)}`);
-                await notifyDjango('/whatsapp/api/webhook/', { from: number, body, type: 'chat' });
-                // Notificar a React via WebSocket: nuevo mensaje entrante (push instantáneo)
-                // Esto reemplaza el polling cada 3s por un evento puntual y eficiente
-                broadcast('new_message', { from: number, body, direction: 'inbound' });
+                await notifyDjango('/whatsapp/api/webhook/', { user_id: uid, from: number, body, type: 'chat' });
+                sendToUser(uid, 'new_message', { from: number, body, direction: 'inbound' });
             }
         });
 
@@ -255,206 +294,226 @@ async function startClient() {
                 if (!status) continue;
 
                 await notifyDjango('/whatsapp/api/message-ack/', {
-                    wpp_message_id: update.key.id || null,
+                    user_id: uid, wpp_message_id: update.key.id || null,
                     number, status, ack: statusNum
                 });
-                // Notificar a React: estado del mensaje actualizado (ticks)
-                broadcast('message_ack', { wpp_message_id: update.key.id, number, status });
+                sendToUser(uid, 'message_ack', { wpp_message_id: update.key.id, number, status });
             }
         });
 
     } catch (err) {
-        console.error('[WhatsApp] Error al iniciar cliente:', err.message);
-        scheduleReconnect(10000);
+        console.error(`[WA ${uid}] Error al iniciar:`, err.message);
+        scheduleReconnect(s, 10000);
+    } finally {
+        s.starting = false;
+    }
+    return s;
+}
+
+// Al arrancar el gateway se reconectan los números que ya estaban vinculados.
+function restoreSessions() {
+    fs.mkdirSync(AUTH_ROOT, { recursive: true });
+
+    // Migración: la versión anterior guardaba UNA sola sesión directamente en
+    // auth_info_baileys/. Se mueve a la carpeta del usuario LEGACY_WA_USER_ID
+    // (por defecto 1, normalmente el primer administrador).
+    if (fs.existsSync(`${AUTH_ROOT}/creds.json`)) {
+        const legacy = process.env.LEGACY_WA_USER_ID || '1';
+        const dest = authDir(legacy);
+        if (!fs.existsSync(`${dest}/creds.json`)) {
+            fs.mkdirSync(dest, { recursive: true });
+            for (const f of fs.readdirSync(AUTH_ROOT)) {
+                if (f.startsWith('user_')) continue;
+                try { fs.renameSync(`${AUTH_ROOT}/${f}`, `${dest}/${f}`); } catch (_) {}
+            }
+            console.log(`[WA] Sesión anterior migrada al usuario ${legacy}.`);
+        }
+    }
+
+    for (const d of fs.readdirSync(AUTH_ROOT)) {
+        const m = /^user_(\d+)$/.exec(d);
+        if (m && hasCreds(m[1])) {
+            console.log(`[WA] Restaurando número del usuario ${m[1]}...`);
+            startSession(m[1]);
+        }
     }
 }
 
-// ─── Inicializar ──────────────────────────────────────────────────────
-startClient();
+// ─── Cola de envío (una por usuario) ──────────────────────────────────
+async function processSendQueue(s) {
+    if (s.queueRunning) return;
+    s.queueRunning = true;
 
-// ─── Procesador de cola ───────────────────────────────────────────────
-async function processSendQueue() {
-    if (queueRunning) return;
-    queueRunning = true;
-    console.log('[Queue] Iniciando procesamiento de cola...');
-
-    while (sendQueue.length > 0) {
-        const task = sendQueue.shift();
-        const { cleanNumber, message, media_base64, media_mimetype, media_filename, media_url } = task;
-
-        if (!isReady || !sock) {
-            console.log(`[Queue] WhatsApp no listo. Esperando 5s antes de reintentar ${cleanNumber}...`);
-            sendQueue.unshift(task);
-            await sleep(5000);
-            continue;
+    while (s.queue.length > 0) {
+        if (!s.isReady || !s.sock) {
+            // Sin conexión: se espera a que el número vuelva ('open' reanuda la cola)
+            break;
         }
-
+        const task = s.queue.shift();
+        const { cleanNumber, message, media_base64, media_mimetype, media_filename, media_url } = task;
         const jid = `${cleanNumber}@s.whatsapp.net`;
 
         try {
             let msgResult;
-
             if (media_base64 && media_mimetype) {
                 const buffer = Buffer.from(media_base64, 'base64');
                 if (media_mimetype.startsWith('image/')) {
-                    msgResult = await sock.sendMessage(jid, {
+                    msgResult = await s.sock.sendMessage(jid, {
                         image: buffer, caption: message || '',
                         mimetype: media_mimetype, fileName: media_filename || 'image'
                     });
                 } else if (media_mimetype.startsWith('video/')) {
-                    msgResult = await sock.sendMessage(jid, {
+                    msgResult = await s.sock.sendMessage(jid, {
                         video: buffer, caption: message || '',
                         mimetype: media_mimetype, fileName: media_filename || 'video'
                     });
                 } else {
-                    msgResult = await sock.sendMessage(jid, {
+                    msgResult = await s.sock.sendMessage(jid, {
                         document: buffer, caption: message || '',
                         mimetype: media_mimetype, fileName: media_filename || 'archivo'
                     });
                 }
             } else if (media_url) {
-                // Descarga el archivo (ej. desde PocketBase) y lo envía según
-                // su tipo real: antes se mandaba todo como imagen y los videos
-                // "se enviaban" pero nunca llegaban al destinatario.
                 const resp = await fetch(media_url);
-                if (!resp.ok) {
-                    throw new Error(`No se pudo descargar el media (${resp.status}): ${media_url}`);
-                }
+                if (!resp.ok) throw new Error(`No se pudo descargar el media (${resp.status}): ${media_url}`);
                 const buffer = Buffer.from(await resp.arrayBuffer());
                 const mime = resp.headers.get('content-type') || 'application/octet-stream';
                 if (mime.startsWith('image/')) {
-                    msgResult = await sock.sendMessage(jid, {
-                        image: buffer, caption: message || '', mimetype: mime
-                    });
+                    msgResult = await s.sock.sendMessage(jid, { image: buffer, caption: message || '', mimetype: mime });
                 } else if (mime.startsWith('video/')) {
-                    msgResult = await sock.sendMessage(jid, {
-                        video: buffer, caption: message || '', mimetype: mime
-                    });
+                    msgResult = await s.sock.sendMessage(jid, { video: buffer, caption: message || '', mimetype: mime });
                 } else {
-                    msgResult = await sock.sendMessage(jid, {
+                    msgResult = await s.sock.sendMessage(jid, {
                         document: buffer, caption: message || '',
                         mimetype: mime, fileName: media_url.split('/').pop() || 'archivo'
                     });
                 }
             } else {
-                msgResult = await sock.sendMessage(jid, { text: message });
+                msgResult = await s.sock.sendMessage(jid, { text: message });
             }
 
             const wppId = msgResult?.key?.id || null;
-            console.log(`[Queue] ✓ Enviado a ${cleanNumber} | id=${wppId}`);
+            console.log(`[WA ${s.uid}] ✓ Enviado a ${cleanNumber}`);
             await notifyDjango('/whatsapp/api/send-result/', {
-                number: cleanNumber, status: 'sent', wpp_message_id: wppId
+                user_id: s.uid, number: cleanNumber, status: 'sent', wpp_message_id: wppId
             });
-            // Push a React: mensaje de campaña enviado exitosamente
-            broadcast('campaign_msg_sent', { number: cleanNumber, status: 'sent', wpp_message_id: wppId });
-
+            sendToUser(s.uid, 'campaign_msg_sent', { number: cleanNumber, status: 'sent', wpp_message_id: wppId });
         } catch (err) {
             const errorMsg = err.message || String(err);
-            console.error(`[Queue] ✗ Error enviando a ${cleanNumber}:`, errorMsg);
+            console.error(`[WA ${s.uid}] ✗ Error enviando a ${cleanNumber}:`, errorMsg);
             await notifyDjango('/whatsapp/api/send-result/', {
-                number: cleanNumber, status: 'failed', error: errorMsg
+                user_id: s.uid, number: cleanNumber, status: 'failed', error: errorMsg
             });
         }
 
-        if (sendQueue.length > 0) {
-            await sleep(2000);
-        }
+        if (s.queue.length > 0) await sleep(2000);
     }
 
-    queueRunning = false;
-    console.log('[Queue] Cola vaciada.');
+    s.queueRunning = false;
 }
 
-// ─── Endpoints ────────────────────────────────────────────────────────
+// ─── Endpoints (todos reciben user_id desde Django) ───────────────────
+function userIdFrom(req) {
+    const uid = (req.body && req.body.user_id) ?? req.query.user_id;
+    return uid == null || uid === '' ? null : String(uid);
+}
+
+function requireUser(req, res) {
+    const uid = userIdFrom(req);
+    if (!uid) { res.status(400).json({ success: false, error: 'Falta user_id' }); return null; }
+    return uid;
+}
 
 app.post('/api/send', (req, res) => {
-    if (!isReady) {
-        return res.status(503).json({ success: false, error: 'WhatsApp no conectado. Escanea el QR.' });
+    const uid = requireUser(req, res); if (!uid) return;
+    const s = getSession(uid);
+    if (!s || !s.isReady) {
+        return res.status(503).json({ success: false, error: 'Tu WhatsApp no está conectado. Escanea el QR.' });
     }
     const { number, message, media_url, media_base64, media_mimetype, media_filename } = req.body;
     if (!number || !message) {
         return res.status(400).json({ success: false, error: 'Faltan parametros: number y message son requeridos.' });
     }
-    const cleanNumber = number.replace(/[^0-9]/g, '');
-    sendQueue.push({ cleanNumber, message, media_url, media_base64, media_mimetype, media_filename });
-    res.json({ success: true, status: 'queued', queue_size: sendQueue.length });
-    processSendQueue();
+    const cleanNumber = String(number).replace(/[^0-9]/g, '');
+    s.queue.push({ cleanNumber, message, media_url, media_base64, media_mimetype, media_filename });
+    res.json({ success: true, status: 'queued', queue_size: s.queue.length });
+    processSendQueue(s);
 });
 
 app.get('/api/status', (req, res) => {
-    res.json({ ready: isReady });
+    const uid = requireUser(req, res); if (!uid) return;
+    const s = getSession(uid);
+    res.json({ ready: Boolean(s && s.isReady) });
 });
 
-app.get('/api/qr', (req, res) => {
+// Pedir el QR también "despierta" la sesión del usuario si no estaba activa.
+app.get('/api/qr', async (req, res) => {
+    const uid = requireUser(req, res); if (!uid) return;
+    let s = getSession(uid, true);
+    s.lastInterest = Date.now();
+    if (!s.sock && !s.starting) s = await startSession(uid);
     res.json({
-        ready: isReady,
-        has_qr: currentQR !== null,
-        qr: currentQR,
-        has_pairing: pairingCode !== null,
-        pairing_code: pairingCode,
-        pairing_phone: pairingPhone
+        ready: s.isReady,
+        has_qr: s.currentQR !== null,
+        qr: s.currentQR,
+        has_pairing: s.pairingCode !== null,
+        pairing_code: s.pairingCode,
+        pairing_phone: s.pairingPhone,
+        limit_reached: Boolean(s.limitReached),
+        ...(s.limitReached ? { error: `El servidor alcanzó el máximo de ${MAX_SESSIONS} números conectados.` } : {}),
     });
 });
 
 app.post('/api/request-pairing', async (req, res) => {
+    const uid = requireUser(req, res); if (!uid) return;
     const { phone } = req.body;
     if (!phone) return res.status(400).json({ success: false, error: 'Falta el numero de telefono' });
 
-    const cleanPhone = phone.replace(/[^0-9]/g, '');
+    const cleanPhone = String(phone).replace(/[^0-9]/g, '');
     if (cleanPhone.length < 7) return res.status(400).json({ success: false, error: 'Numero invalido' });
-    if (isReady) return res.status(400).json({ success: false, error: 'Ya hay un numero conectado.' });
 
-    pairingPhone = cleanPhone;
-    pairingCode = null;
+    let s = getSession(uid, true);
+    if (s.isReady) return res.status(400).json({ success: false, error: 'Ya tienes un número conectado.' });
+    s.lastInterest = Date.now();
+    s.pairingPhone = cleanPhone;
+    s.pairingCode = null;
+    if (!s.sock) s = await startSession(uid);
 
-    if (sock) {
+    if (s.sock) {
         try {
-            const code = await sock.requestPairingCode(cleanPhone);
-            pairingCode = code;
-            currentQR = null;
-            console.log(`[WhatsApp] Código de vinculación: ${code}`);
-            return res.json({ success: true, code });
+            s.pairingCode = await s.sock.requestPairingCode(cleanPhone);
+            s.currentQR = null;
+            return res.json({ success: true, code: s.pairingCode });
         } catch (e) {
-            pairingPhone = null;
-            return res.status(500).json({ success: false, error: 'No se pudo obtener el código: ' + e.message });
+            // Puede fallar si el socket aún no está listo: el código llegará con el siguiente QR
         }
     }
-
-    res.json({ success: true, message: 'Numero guardado. El codigo aparecera cuando el cliente inicie.' });
+    res.json({ success: true, message: 'Número guardado. El código aparecerá en unos segundos.' });
 });
 
 app.post('/api/logout', async (req, res) => {
+    const uid = requireUser(req, res); if (!uid) return;
+    const s = getSession(uid, true);
+    res.json({ success: true, message: 'Desconectando...' });
+    try { if (s.sock) await s.sock.logout(); } catch (_) {}
+    stopSession(s);
+    s.queue = [];
+    s.pairingCode = null;
+    s.pairingPhone = null;
+    // Borrar el CONTENIDO de la carpeta del usuario (invalida la sesión)
     try {
-        isReady = false;
-        currentQR = null;
-        pairingCode = null;
-        pairingPhone = null;
-        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-
-        res.json({ success: true, message: 'Desconectando...' });
-
-        try { if (sock) await sock.logout(); } catch (e) {}
-        // La carpeta puede ser un punto de montaje de Docker (no se puede
-        // eliminar la carpeta en sí): se borra su CONTENIDO archivo por
-        // archivo, que es lo que realmente invalida la sesión.
-        try {
-            for (const f of fs.readdirSync('./auth_info_baileys')) {
-                try { fs.rmSync(`./auth_info_baileys/${f}`, { recursive: true, force: true }); } catch (_) {}
-            }
-        } catch (_) {}
-
-        setTimeout(startClient, 2000);
-    } catch (err) {
-        if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
-    }
+        for (const f of fs.readdirSync(authDir(uid))) {
+            try { fs.rmSync(`${authDir(uid)}/${f}`, { recursive: true, force: true }); } catch (_) {}
+        }
+    } catch (_) {}
+    sendToUser(uid, 'qr_update', { ready: false });
+    // Generar un QR nuevo para vincular otro número
+    s.lastInterest = Date.now();
+    setTimeout(() => startSession(uid), 2000);
 });
 
 const PORT = process.env.PORT || 3001;
-// Usar server.listen en lugar de app.listen para que HTTP y WebSocket
-// compartan el mismo puerto — el servidor HTTP despacha las peticiones REST
-// y el WebSocketServer maneja las conexiones WS en el mismo proceso.
 server.listen(PORT, '0.0.0.0', () => {
-    console.log(`[WhatsApp] API REST + WebSocket corriendo en http://0.0.0.0:${PORT}`);
-    console.log(`[WhatsApp] WebSocket disponible en ws://0.0.0.0:${PORT}`);
-    console.log('[WhatsApp] Iniciando WhatsApp (Baileys)...');
+    console.log(`[WhatsApp] API REST + WebSocket en http://0.0.0.0:${PORT} (multi-número, máx. ${MAX_SESSIONS})`);
+    restoreSessions();
 });

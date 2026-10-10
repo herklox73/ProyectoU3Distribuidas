@@ -159,6 +159,17 @@ docker compose -f compose.aws.yaml logs -f whatsapp
 - El MFA solo se puede configurar sobre la propia cuenta, y el envío de correos exige sesión.
 - No hay contraseñas fijas en las imágenes de Docker.
 
+## Un número de WhatsApp por usuario
+
+- Cada usuario entra con su cuenta, va a **Conectar WhatsApp** y escanea el QR con **su** celular.
+- Cada usuario ve solo **sus** contactos, **su** chat, **sus** mensajes y reportes, y sus campañas
+  salen desde **su** número.
+- En una t3.micro caben unos **5 números conectados a la vez** (`MAX_WA_SESSIONS` en
+  `compose.aws.yaml`). Si se llena, la página de conexión muestra "Servidor lleno".
+  Para más usuarios: una máquina más grande (t3.small = 2 GB ≈ 12 números) y subir ese valor.
+- Los contactos y mensajes que existían antes de esta versión quedan a nombre del primer
+  administrador, igual que el número que ya estaba vinculado.
+
 ## Limitaciones de esta versión
 
 - **Sin Asistente IA:** la página no aparece en el menú.
