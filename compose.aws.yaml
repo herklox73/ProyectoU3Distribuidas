@@ -5,6 +5,8 @@
 #     El frontend se compila con VITE_ENABLE_AI=false y la página desaparece del menú.
 #   - El frontend se publica en el puerto 80 (http://IP-DEL-SERVIDOR).
 #   - DEBUG desactivado y límites de memoria por servicio.
+#   - Sin correo: no hay cola de correos y se ocultan Notificaciones, Cola de
+#     correos, registro y recuperación de contraseña (VITE_ENABLE_EMAIL=false).
 #   - Seguridad: el gateway de WhatsApp NO se publica a internet (puerto 3001
 #     cerrado). El navegador usa el WebSocket a través de Nginx (/ws/) con un
 #     ticket firmado, y Django <-> gateway se autentican con INTERNAL_API_TOKEN.
@@ -22,6 +24,7 @@ services:
         VITE_ENABLE_AI: "false"
         VITE_ENABLE_CREDITS: "false"
         VITE_ENABLE_GOOGLE: "false"
+        VITE_ENABLE_EMAIL: "false"
         VITE_WS_URL: "ws://${PUBLIC_IP:?Define PUBLIC_IP con la IP publica del servidor}/ws/"
     container_name: masssend-frontend
     ports:
@@ -60,31 +63,7 @@ services:
     restart: unless-stopped
     mem_limit: 320m
 
-  email-worker:
-    build:
-      context: ./backend
-    container_name: masssend-email-worker
-    command: ["python", "manage.py", "process_email_queue"]
-    env_file:
-      - ./backend/.env
-    environment:
-      DEBUG: "False"
-      WHATSAPP_API_URL: "http://whatsapp:3001"
-      POCKETBASE_URL: "http://pocketbase:8080"
-      POCKETBASE_PUBLIC_URL: "http://${PUBLIC_IP}:8090"
-      FRONTEND_URL: "http://${PUBLIC_IP}"
-      SQLITE_PATH: "/app/data/db.sqlite3"
-      INTERNAL_API_TOKEN: "${INTERNAL_API_TOKEN:?Define INTERNAL_API_TOKEN en .env}"
-    volumes:
-      - masssend_db:/app/data
-      - ./backend/media:/app/media
-    depends_on:
-      - backend
-    networks:
-      - masssend_network
-    restart: unless-stopped
-    mem_limit: 160m
-
+  # Sin el servicio de cola de correos: en este despliegue no se envían correos.
   whatsapp:
     build:
       context: ./backend/whatsapp_api

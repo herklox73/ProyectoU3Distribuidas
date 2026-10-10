@@ -159,6 +159,18 @@ docker compose -f compose.aws.yaml logs -f whatsapp
 - El MFA solo se puede configurar sobre la propia cuenta, y el envío de correos exige sesión.
 - No hay contraseñas fijas en las imágenes de Docker.
 
+## Crear cuentas de usuario
+
+En esta versión no hay correo, así que **no aparece "Crear cuenta nueva"** en el login:
+las cuentas las crea el administrador. Opción rápida (cambia correo y contraseña):
+
+```bash
+docker compose -f compose.aws.yaml exec backend python manage.py shell -c 'from django.contrib.auth.models import User; User.objects.create_user(username="correo@ejemplo.com", email="correo@ejemplo.com", password="ClaveSegura2026"); print("USUARIO CREADO")'
+```
+
+O desde el panel: `http://TU_IP/admin/` → **Usuarios → Agregar usuario**
+(usa el correo como nombre de usuario).
+
 ## Un número de WhatsApp por usuario
 
 - Cada usuario entra con su cuenta, va a **Conectar WhatsApp** y escanea el QR con **su** celular.

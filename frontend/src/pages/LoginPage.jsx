@@ -2,6 +2,10 @@ import { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
 
 const GOOGLE_ENABLED = import.meta.env.VITE_ENABLE_GOOGLE !== 'false'
+// Sin correo configurado (VITE_ENABLE_EMAIL=false) no se puede verificar una
+// cuenta nueva ni recuperar la contraseña: se ocultan esos enlaces y las
+// cuentas las crea el administrador.
+const EMAIL_ENABLED = import.meta.env.VITE_ENABLE_EMAIL !== 'false'
 
 export default function LoginPage({ onRequireMfa, onGoToRegister, onGoToForgotPassword }) {
   const { login, requireGoogleMfa } = useAuth()
@@ -146,7 +150,7 @@ export default function LoginPage({ onRequireMfa, onGoToRegister, onGoToForgotPa
           </button>
         </form>
 
-        {(onGoToForgotPassword || onGoToRegister) && (
+        {EMAIL_ENABLED && (onGoToForgotPassword || onGoToRegister) && (
           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 14 }}>
             {onGoToForgotPassword && (
               <button

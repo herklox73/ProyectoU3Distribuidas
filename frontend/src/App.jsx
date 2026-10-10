@@ -113,7 +113,10 @@ const ICONS = {
 const AI_ENABLED = import.meta.env.VITE_ENABLE_AI !== 'false'
 // Igual con los créditos/pagos: VITE_ENABLE_CREDITS=false oculta la página.
 const CREDITS_ENABLED = import.meta.env.VITE_ENABLE_CREDITS !== 'false'
+// Y con el correo: VITE_ENABLE_EMAIL=false oculta Notificaciones y Cola de correos.
+const EMAIL_ENABLED = import.meta.env.VITE_ENABLE_EMAIL !== 'false'
 const isEnabled = (id) => (AI_ENABLED || id !== 'asistente') && (CREDITS_ENABLED || id !== 'creditos')
+  && (EMAIL_ENABLED || (id !== 'notificaciones' && id !== 'cola'))
 
 const NAV_ALL = [
   { id: 'inicio',         label: 'Inicio'              },
