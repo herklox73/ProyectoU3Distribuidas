@@ -60,20 +60,25 @@ export default function ChatPage() {
     },
     message_ack: (data) => {
       // Actualizar estado del tick de un mensaje
+      // Se busca por ID del mensaje en todos los chats: con el formato nuevo
+      // de WhatsApp (LID) el aviso puede llegar sin número.
       setMensajes(prev => {
-        const chat = prev[data.number]
-        if (!chat) return prev
-        return {
-          ...prev,
-          [data.number]: {
+        let cambio = false
+        const next = {}
+        for (const [num, chat] of Object.entries(prev)) {
+          if (!chat.mensajes.some(m => m.wpp_message_id && m.wpp_message_id === data.wpp_message_id)) {
+            next[num] = chat
+            continue
+          }
+          cambio = true
+          next[num] = {
             ...chat,
             mensajes: chat.mensajes.map(m =>
-              m.wpp_message_id === data.wpp_message_id
-                ? { ...m, status: data.status }
-                : m
+              m.wpp_message_id === data.wpp_message_id ? { ...m, status: data.status } : m
             )
           }
         }
+        return cambio ? next : prev
       })
     }
   })

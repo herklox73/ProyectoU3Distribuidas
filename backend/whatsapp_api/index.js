@@ -110,6 +110,27 @@ const sessions = new Map();       // uid -> sesión
 let waVersion = null;
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// Número (solo dígitos) a partir de un JID clásico "5939...@s.whatsapp.net".
+// Los JID "@lid" no contienen el número, así que devuelven ''.
+function numeroDesdeJid(jid) {
+    if (!jid || !jid.endsWith('@s.whatsapp.net')) return '';
+    return jid.split('@')[0].split(':')[0];
+}
+
+// ID del mensaje -> número al que se envió (los últimos 5000), para poder
+// informar el número en los avisos de entregado/leído que llegan con LID.
+const sentIds = new Map();
+function recordarEnvio(id, number) {
+    if (!id) return;
+    sentIds.set(id, number);
+    if (sentIds.size > 5000) sentIds.delete(sentIds.keys().next().value);
+}
+
+// ID de mensaje con el mismo formato que usa WhatsApp Web ("3EB0" + hex).
+function nuevoIdMensaje() {
+    return '3EB0' + require('crypto').randomBytes(9).toString('hex').toUpperCase();
+}
 function authDir(uid) { return `${AUTH_ROOT}/user_${uid}`; }
 function hasCreds(uid) { return fs.existsSync(`${authDir(uid)}/creds.json`); }
 
@@ -266,9 +287,11 @@ async function startSession(uid) {
             for (const msg of messages) {
                 if (msg.key.fromMe) continue;
                 const jid = msg.key.remoteJid || '';
-                if (!jid.endsWith('@s.whatsapp.net')) continue;
+                if (jid.endsWith('@g.us') || jid.endsWith('@broadcast')) continue;
 
-                const number = jid.replace('@s.whatsapp.net', '');
+                // Con LID el número real viene aparte, en senderPn
+                const number = numeroDesdeJid(jid) || numeroDesdeJid(msg.key.senderPn || '');
+                if (!number) continue;
                 const body = msg.message?.conversation ||
                              msg.message?.extendedTextMessage?.text || '';
                 if (!body) continue;
@@ -279,23 +302,29 @@ async function startSession(uid) {
         });
 
         // ─── ACK de mensajes SALIENTES → Django ───────────────────────
+        // Escala de Baileys (proto.WebMessageInfo.Status):
+        //   0 = error, 1 = pendiente, 2 = llegó al servidor de WhatsApp,
+        //   3 = entregado al celular, 4 = leído, 5 = reproducido (audio/video).
+        // WhatsApp ahora identifica muchos chats con "LID" (xxx@lid) en vez del
+        // número (xxx@s.whatsapp.net). Por eso el aviso se relaciona con el
+        // mensaje por su ID, y el número solo se usa como respaldo si viene.
         sock.ev.on('messages.update', async (updates) => {
             for (const update of updates) {
-                if (!update.key?.fromMe) continue;
+                if (!update.key?.fromMe || !update.key.id) continue;
                 const jid = update.key.remoteJid || '';
-                if (!jid.endsWith('@s.whatsapp.net')) continue;
+                if (jid.endsWith('@g.us') || jid.endsWith('@broadcast')) continue;
 
-                const number = jid.replace('@s.whatsapp.net', '');
                 const statusNum = update.update?.status;
-                if (!statusNum) continue;
+                if (statusNum === undefined || statusNum === null) continue;
 
-                const statusMap = { 1: 'sent', 2: 'delivered', 3: 'read', 4: 'read' };
+                const statusMap = { 0: 'failed', 2: 'sent', 3: 'delivered', 4: 'read', 5: 'read' };
                 const status = statusMap[statusNum];
                 if (!status) continue;
 
+                const number = numeroDesdeJid(jid) || sentIds.get(update.key.id) || '';
+
                 await notifyDjango('/whatsapp/api/message-ack/', {
-                    user_id: uid, wpp_message_id: update.key.id || null,
-                    number, status, ack: statusNum
+                    user_id: uid, wpp_message_id: update.key.id, number, status
                 });
                 sendToUser(uid, 'message_ack', { wpp_message_id: update.key.id, number, status });
             }
@@ -352,23 +381,29 @@ async function processSendQueue(s) {
         const task = s.queue.shift();
         const { cleanNumber, message, media_base64, media_mimetype, media_filename, media_url } = task;
         const jid = `${cleanNumber}@s.whatsapp.net`;
+        // Django manda el ID con el que ya guardó el mensaje: así los avisos de
+        // entregado/leído se relacionan con su fila aunque lleguen antes que
+        // el resultado del envío.
+        const msgId = task.message_id || nuevoIdMensaje();
+        recordarEnvio(msgId, cleanNumber);
+        const send = (content) => s.sock.sendMessage(jid, content, { messageId: msgId });
 
         try {
             let msgResult;
             if (media_base64 && media_mimetype) {
                 const buffer = Buffer.from(media_base64, 'base64');
                 if (media_mimetype.startsWith('image/')) {
-                    msgResult = await s.sock.sendMessage(jid, {
+                    msgResult = await send({
                         image: buffer, caption: message || '',
                         mimetype: media_mimetype, fileName: media_filename || 'image'
                     });
                 } else if (media_mimetype.startsWith('video/')) {
-                    msgResult = await s.sock.sendMessage(jid, {
+                    msgResult = await send({
                         video: buffer, caption: message || '',
                         mimetype: media_mimetype, fileName: media_filename || 'video'
                     });
                 } else {
-                    msgResult = await s.sock.sendMessage(jid, {
+                    msgResult = await send({
                         document: buffer, caption: message || '',
                         mimetype: media_mimetype, fileName: media_filename || 'archivo'
                     });
@@ -379,20 +414,20 @@ async function processSendQueue(s) {
                 const buffer = Buffer.from(await resp.arrayBuffer());
                 const mime = resp.headers.get('content-type') || 'application/octet-stream';
                 if (mime.startsWith('image/')) {
-                    msgResult = await s.sock.sendMessage(jid, { image: buffer, caption: message || '', mimetype: mime });
+                    msgResult = await send({ image: buffer, caption: message || '', mimetype: mime });
                 } else if (mime.startsWith('video/')) {
-                    msgResult = await s.sock.sendMessage(jid, { video: buffer, caption: message || '', mimetype: mime });
+                    msgResult = await send({ video: buffer, caption: message || '', mimetype: mime });
                 } else {
-                    msgResult = await s.sock.sendMessage(jid, {
+                    msgResult = await send({
                         document: buffer, caption: message || '',
                         mimetype: mime, fileName: media_url.split('/').pop() || 'archivo'
                     });
                 }
             } else {
-                msgResult = await s.sock.sendMessage(jid, { text: message });
+                msgResult = await send({ text: message });
             }
 
-            const wppId = msgResult?.key?.id || null;
+            const wppId = msgResult?.key?.id || msgId;
             console.log(`[WA ${s.uid}] ✓ Enviado a ${cleanNumber}`);
             await notifyDjango('/whatsapp/api/send-result/', {
                 user_id: s.uid, number: cleanNumber, status: 'sent', wpp_message_id: wppId
@@ -402,7 +437,8 @@ async function processSendQueue(s) {
             const errorMsg = err.message || String(err);
             console.error(`[WA ${s.uid}] ✗ Error enviando a ${cleanNumber}:`, errorMsg);
             await notifyDjango('/whatsapp/api/send-result/', {
-                user_id: s.uid, number: cleanNumber, status: 'failed', error: errorMsg
+                user_id: s.uid, number: cleanNumber, status: 'failed', error: errorMsg,
+                wpp_message_id: msgId
             });
         }
 
@@ -431,11 +467,13 @@ app.post('/api/send', (req, res) => {
         return res.status(503).json({ success: false, error: 'Tu WhatsApp no está conectado. Escanea el QR.' });
     }
     const { number, message, media_url, media_base64, media_mimetype, media_filename } = req.body;
+    // ID opcional generado por Django (solo letras/números, como los de WhatsApp)
+    const message_id = /^[A-Za-z0-9]{8,64}$/.test(req.body.message_id || '') ? req.body.message_id : null;
     if (!number || !message) {
         return res.status(400).json({ success: false, error: 'Faltan parametros: number y message son requeridos.' });
     }
     const cleanNumber = String(number).replace(/[^0-9]/g, '');
-    s.queue.push({ cleanNumber, message, media_url, media_base64, media_mimetype, media_filename });
+    s.queue.push({ cleanNumber, message, media_url, media_base64, media_mimetype, media_filename, message_id });
     res.json({ success: true, status: 'queued', queue_size: s.queue.length });
     processSendQueue(s);
 });

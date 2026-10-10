@@ -30,6 +30,7 @@ def get_campaign_lock(campaign_id: int) -> threading.Lock:
 
 from .internal_auth import internal_headers
 from .telefonos import normalizar_o_igual
+from .estados import nuevo_id_mensaje
 
 
 def _whatsapp_url(path):
@@ -675,13 +676,24 @@ def _send_campaign_background(campaign_id, contact_ids):
                     for key, val in contact.custom_data.items():
                         mensaje_final = mensaje_final.replace(f'{{{{{key}}}}}', str(val))
 
+                # El mensaje se guarda ANTES de enviarlo, con el ID que usará
+                # WhatsApp: así los avisos de enviado/entregado/leído lo encuentran.
                 delivery_status = 'failed'
-                wpp_msg_id      = None
+                msg_obj = Message.objects.create(
+                    owner_id=campaign.owner_id,
+                    campaign=campaign,
+                    phone_number=contact.phone_number,
+                    content=mensaje_final,
+                    direction='outbound',
+                    delivery_status='pending',
+                    wpp_message_id=nuevo_id_mensaje(),
+                )
                 try:
                     # Se normaliza al enviar: un número guardado como 5930987... (con el
                     # 0 de más) "se enviaba" pero WhatsApp nunca lo entregaba.
                     payload = {"user_id": campaign.owner_id, "number": normalizar_o_igual(contact.phone_number),
-                               "message": mensaje_final, **media_payload}
+                               "message": mensaje_final, "message_id": msg_obj.wpp_message_id,
+                               **media_payload}
                     res = requests.post(_whatsapp_url('/api/send'), json=payload, headers=internal_headers(), timeout=90)
 
                     if res.status_code == 200:
@@ -702,15 +714,10 @@ def _send_campaign_background(campaign_id, contact_ids):
                     progress.last_error = str(e)[:200]
                     print(f"[MassSend] Excepcion → {contact.phone_number}: {e}")
 
-                Message.objects.create(
-                    owner_id=campaign.owner_id,
-                    campaign=campaign,
-                    phone_number=contact.phone_number,
-                    content=mensaje_final,
-                    direction='outbound',
-                    delivery_status=delivery_status,
-                    wpp_message_id=wpp_msg_id,
-                )
+                if delivery_status == 'failed':
+                    # Solo si el gateway no lo aceptó (si ya avisó algo, no se pisa)
+                    Message.objects.filter(pk=msg_obj.pk, delivery_status='pending').update(
+                        delivery_status='failed', error_log=(progress.last_error or '')[:500])
                 progress.save()
 
                 # Pausa entre mensajes dentro del mismo lote

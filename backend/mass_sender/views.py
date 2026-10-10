@@ -22,6 +22,7 @@ from .models import Contact, Message, ApiProvider, Campaign, CampaignProgress
 from .services import default_message_service
 from .internal_auth import internal_headers, is_internal_request, make_ws_ticket
 from .telefonos import normalizar_telefono
+from .estados import RANGO, aplicar_estado, puede_cambiar
 
 def _whatsapp_url(path):
     """Devuelve la URL completa del servicio WhatsApp API."""
@@ -210,10 +211,10 @@ def api_webhook(request):
 @csrf_exempt
 def api_message_ack(request):
     """
-    Llamado por Node.js cuando cambia el estado de entrega de un mensaje.
-    ack: -1=fallido, 0=pendiente, 1=enviado, 2=entregado, 3=leido
-    Intenta actualizar por wpp_message_id primero; si no encuentra,
-    usa el mensaje saliente mas reciente de ese numero como fallback.
+    Llamado por el gateway cuando WhatsApp avisa un cambio de estado de un
+    mensaje saliente: 'sent', 'delivered' (✓✓ gris), 'read' (✓✓ azul) o 'failed'.
+    Se busca el mensaje por su ID de WhatsApp. Solo para mensajes antiguos sin
+    ID se usa como respaldo el número. Un estado nunca retrocede (ver estados.py).
     """
     if not is_internal_request(request):
         return JsonResponse({'error': 'No autorizado'}, status=403)
@@ -222,63 +223,26 @@ def api_message_ack(request):
 
     try:
         data   = json.loads(request.body)
-        wpp_id = data.get('wpp_message_id', '').strip()
-        number = data.get('number', '').strip()
+        wpp_id = (data.get('wpp_message_id') or '').strip()
+        number = re.sub(r'\D', '', str(data.get('number') or ''))
         status = data.get('status', '')
 
-        ACK_MAP = {
-            '-1': 'failed',
-            '0':  'pending',
-            '1':  'sent',
-            '2':  'delivered',
-            '3':  'read',
-        }
-        ack_num = str(data.get('ack', ''))
-        if ack_num in ACK_MAP:
-            status = ACK_MAP[ack_num]
-
-        if not status:
-            return JsonResponse({"success": False, "error": "Sin status/ack"}, status=400)
-
-        PRIORITY = {'failed': 0, 'pending': 0, 'sent': 1, 'delivered': 2, 'read': 3}
+        if status not in RANGO:
+            return JsonResponse({"success": False, "error": "Estado desconocido"}, status=400)
 
         # Solo se tocan mensajes del dueño del número que envió el aviso
-        owner = _internal_owner(data)
-        base_qs = Message.objects.filter(owner=owner)
+        base_qs = Message.objects.filter(owner=_internal_owner(data), direction='outbound')
 
-        updated = 0
+        msg = base_qs.filter(wpp_message_id=wpp_id).first() if wpp_id else None
 
-        # 1. Intentar actualizar por wpp_message_id
-        if wpp_id:
-            updated = base_qs.filter(wpp_message_id=wpp_id).update(delivery_status=status)
+        if not msg and number:
+            # Respaldo: el mensaje más reciente a ese número que no tiene ID guardado
+            candidatos = base_qs.filter(phone_number__icontains=number).filter(
+                Q(wpp_message_id__isnull=True) | Q(wpp_message_id='')
+            ).order_by('-sent_at')[:5]
+            msg = next((m for m in candidatos if puede_cambiar(m.delivery_status, status)), None)
 
-        # 2. Fallback: buscar el mensaje saliente más reciente que aún no haya alcanzado ese estado
-        if updated == 0 and number:
-            new_p = PRIORITY.get(status, 0)
-
-            # Preferir mensajes cuyo estado actual sea menor al nuevo (para no retroceder)
-            estados_inferiores = [s for s, p in PRIORITY.items() if p < new_p]
-
-            msg = base_qs.filter(
-                phone_number__icontains=number,
-                direction='outbound',
-                delivery_status__in=estados_inferiores if estados_inferiores else ['sent', 'pending']
-            ).order_by('-sent_at').first()
-
-            # Si no encontró con filtro de estado, intentar sin filtro (para el caso de 'failed')
-            if not msg and status == 'failed':
-                msg = base_qs.filter(
-                    phone_number__icontains=number,
-                    direction='outbound'
-                ).order_by('-sent_at').first()
-
-            if msg:
-                msg.delivery_status = status
-                if wpp_id and not msg.wpp_message_id:
-                    msg.wpp_message_id = wpp_id
-                msg.save()
-                updated = 1
-
+        updated = 1 if msg and aplicar_estado(msg, status, wpp_id) else 0
         return JsonResponse({"success": True, "updated": updated})
 
     except Exception as e:
@@ -288,8 +252,8 @@ def api_message_ack(request):
 @csrf_exempt
 def api_send_result(request):
     """
-    Llamado por Node.js cuando un mensaje de la cola fue procesado (enviado o fallido).
-    Actualiza el estado real del mensaje en Django.
+    Llamado por el gateway cuando un mensaje de la cola fue procesado
+    ('sent' o 'failed'). Se busca por el ID que Django le dio al mensaje.
     """
     if not is_internal_request(request):
         return JsonResponse({'error': 'No autorizado'}, status=403)
@@ -297,26 +261,27 @@ def api_send_result(request):
         return JsonResponse({"success": False}, status=405)
     try:
         data   = json.loads(request.body)
-        number = data.get('number', '').strip()
+        number = re.sub(r'\D', '', str(data.get('number') or ''))
         status = data.get('status', '')       # 'sent' o 'failed'
-        wpp_id = data.get('wpp_message_id', '') or ''
+        wpp_id = (data.get('wpp_message_id') or '').strip()
 
-        if not number or not status:
+        if not status or (not number and not wpp_id):
             return JsonResponse({"success": False, "error": "Faltan parametros"}, status=400)
 
-        # Buscar el mensaje outbound más reciente en estado 'pending' para ese número
-        msg = Message.objects.filter(
-            owner=_internal_owner(data),
-            phone_number__icontains=number,
-            direction='outbound',
-            delivery_status='pending'
-        ).order_by('-sent_at').first()
+        base_qs = Message.objects.filter(owner=_internal_owner(data), direction='outbound')
+
+        msg = base_qs.filter(wpp_message_id=wpp_id).first() if wpp_id else None
+        if not msg and number:
+            # Respaldo para mensajes creados sin ID: el pendiente más reciente a ese número
+            msg = base_qs.filter(
+                phone_number__icontains=number, delivery_status='pending'
+            ).order_by('-sent_at').first()
 
         if msg:
-            msg.delivery_status = status
-            if wpp_id and not msg.wpp_message_id:
-                msg.wpp_message_id = wpp_id
-            msg.save()
+            aplicar_estado(msg, status, wpp_id)
+            if status == 'failed' and data.get('error') and msg.delivery_status == 'failed':
+                msg.error_log = str(data['error'])[:500]
+                msg.save(update_fields=['error_log'])
 
         return JsonResponse({"success": True, "updated": 1 if msg else 0})
     except Exception as e:
@@ -599,7 +564,8 @@ def api_reportes(request):
 
     enviados   = outbound.count()
     recibidos  = inbound.count()
-    entregados = outbound.filter(delivery_status='delivered').count()
+    # Un mensaje leído también fue entregado: "Entregados" incluye los leídos
+    entregados = outbound.filter(delivery_status__in=['delivered', 'read']).count()
     leidos     = outbound.filter(delivery_status='read').count()
     fallidos   = outbound.filter(delivery_status='failed').count()
     enviados_puro = outbound.filter(delivery_status='sent').count()

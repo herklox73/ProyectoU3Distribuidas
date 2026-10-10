@@ -42,6 +42,7 @@ from django.db import transaction
 from django.conf import settings
 from .models import Contact, Message, ApiProvider
 from .telefonos import normalizar_telefono, normalizar_o_igual
+from .estados import nuevo_id_mensaje
 
 
 # ─── Gateway: abstracción del transporte hacia WhatsApp ──────────────────────
@@ -61,7 +62,7 @@ class WhatsAppGateway:
     # Cada usuario tiene su propio número: todas las llamadas indican
     # user_id para que el gateway use la sesión de WhatsApp de ese usuario.
 
-    def send(self, number: str, message: str, user_id) -> dict:
+    def send(self, number: str, message: str, user_id, message_id: str = '') -> dict:
         """
         Envía un mensaje de texto desde el número del usuario indicado.
         Devuelve dict con success, wpp_message_id.
@@ -69,7 +70,7 @@ class WhatsAppGateway:
         """
         resp = requests.post(
             f'{self.base_url}/api/send',
-            json={'user_id': user_id, 'number': number, 'message': message},
+            json={'user_id': user_id, 'number': number, 'message': message, 'message_id': message_id},
             headers=internal_headers(),
             timeout=20
         )
@@ -140,23 +141,26 @@ class MessageService:
         )
 
         # Paso 2: crear registro con estado inicial
+        # El ID se genera aquí y viaja al gateway: WhatsApp usa ese mismo ID,
+        # así los avisos de entregado/leído encuentran esta fila.
         msg_obj = Message.objects.create(
             owner=owner,
             phone_number=numero,
             content=texto,
             direction='outbound',
             delivery_status='pending',
+            wpp_message_id=nuevo_id_mensaje(),
         )
 
         # Paso 3: intentar enviar a Node.js
         wpp_id = None
         try:
-            node_resp = self.gateway.send(numero, texto, owner.pk)
-            wpp_id = node_resp.get('wpp_message_id') or None
+            self.gateway.send(numero, texto, owner.pk, msg_obj.wpp_message_id)
+            wpp_id = msg_obj.wpp_message_id
+            # Queda en la cola del gateway; si falla, él lo cambia a 'failed'.
+            # Después WhatsApp avisa entregado y leído con este mismo ID.
             msg_obj.delivery_status = 'sent'
-            if wpp_id:
-                msg_obj.wpp_message_id = wpp_id
-            msg_obj.save()
+            msg_obj.save(update_fields=['delivery_status'])
         except requests.HTTPError as e:
             # 503 = el número de WhatsApp de ESTE usuario no está vinculado
             if e.response is not None and e.response.status_code == 503:
