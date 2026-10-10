@@ -20,6 +20,7 @@ services:
       context: ./frontend
       args:
         VITE_ENABLE_AI: "false"
+        VITE_ENABLE_CREDITS: "false"
         VITE_WS_URL: "ws://${PUBLIC_IP:?Define PUBLIC_IP con la IP publica del servidor}/ws/"
     container_name: masssend-frontend
     ports:
@@ -47,6 +48,7 @@ services:
       SQLITE_PATH: "/app/data/db.sqlite3"
       INTERNAL_API_TOKEN: "${INTERNAL_API_TOKEN:?Define INTERNAL_API_TOKEN en .env}"
       GUNICORN_WORKERS: "2"
+      BILLING_ENABLED: "False"
     volumes:
       - masssend_db:/app/data
       - ./backend/media:/app/media

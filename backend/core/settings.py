@@ -244,6 +244,10 @@ PAYPHONE_BASE_URL = os.environ.get('PAYPHONE_BASE_URL', 'https://pay.payphonetod
 # billetera del usuario, para que pueda probar el sistema antes de
 # comprar más).
 FREE_SIGNUP_CREDITS = int(os.environ.get('FREE_SIGNUP_CREDITS', '10'))
+# Sistema de créditos (cobro por mensaje). BILLING_ENABLED=False lo
+# desactiva: las campañas se envían sin descontar saldo (p. ej. en el
+# despliegue de AWS, donde el sistema se usa sin pagos).
+BILLING_ENABLED = os.environ.get('BILLING_ENABLED', 'True') == 'True'
 
 # ── Google OAuth 2.0 ──────────────────────────────────────────────
 GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')

@@ -111,6 +111,9 @@ const ICONS = {
 // (compose.aws.yaml) se construye con VITE_ENABLE_AI=false y la página
 // desaparece del menú, porque Ollama no cabe en un servidor de 1 GB.
 const AI_ENABLED = import.meta.env.VITE_ENABLE_AI !== 'false'
+// Igual con los créditos/pagos: VITE_ENABLE_CREDITS=false oculta la página.
+const CREDITS_ENABLED = import.meta.env.VITE_ENABLE_CREDITS !== 'false'
+const isEnabled = (id) => (AI_ENABLED || id !== 'asistente') && (CREDITS_ENABLED || id !== 'creditos')
 
 const NAV_ALL = [
   { id: 'inicio',         label: 'Inicio'              },
@@ -127,7 +130,7 @@ const NAV_ALL = [
   { id: 'creditos',       label: 'Créditos'            },
   { id: 'asistente',      label: 'Asistente IA'        },
 ]
-const NAV = NAV_ALL.filter(n => AI_ENABLED || n.id !== 'asistente')
+const NAV = NAV_ALL.filter(n => isEnabled(n.id))
 
 // El admin (cualquier cuenta marcada is_staff=True en Django) ve TODO
 // el menú: lo administrativo (reportes, cola de correos) más todo lo
@@ -139,7 +142,7 @@ const NAV = NAV_ALL.filter(n => AI_ENABLED || n.id !== 'asistente')
 // Los admins no consumen créditos al ejecutar campañas (ver
 // mass_sender/views.py api_campanas_ejecutar), aunque sí puedan ver la
 // página.
-const USER_NAV_IDS  = ['inicio', 'campanas', 'contactos', 'importar', 'mensajes', 'whatsapp', 'notificaciones', 'seguridad', 'creditos', 'asistente'].filter(id => AI_ENABLED || id !== 'asistente')
+const USER_NAV_IDS  = ['inicio', 'campanas', 'contactos', 'importar', 'mensajes', 'whatsapp', 'notificaciones', 'seguridad', 'creditos', 'asistente'].filter(isEnabled)
 const ADMIN_NAV_IDS = NAV.map(n => n.id)
 
 function SidebarStatus({ collapsed }) {

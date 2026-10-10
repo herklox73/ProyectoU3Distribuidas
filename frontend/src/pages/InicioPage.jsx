@@ -105,7 +105,7 @@ export default function InicioPage({ onNavegar }) {
 
       {/* Grid de módulos */}
       <div style={s.grid}>
-        {MODULOS.map(m => (
+        {MODULOS.filter(m => import.meta.env.VITE_ENABLE_CREDITS !== 'false' || m.id !== 'creditos').map(m => (
           <button
             key={m.id}
             style={{ ...s.card, background: m.bg, borderColor: m.color + '33' }}

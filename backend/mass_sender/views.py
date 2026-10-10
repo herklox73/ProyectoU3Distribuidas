@@ -1086,7 +1086,8 @@ def api_campanas_ejecutar(request, pk):
         # Cobro de créditos: 1 crédito = 1 mensaje. Los admins (staff)
         # no consumen créditos. Si no alcanza el saldo, se libera el
         # lock recién adquirido y se corta antes de lanzar el hilo.
-        if not user.is_staff:
+        # Con BILLING_ENABLED=False (despliegue sin pagos) no se cobra.
+        if not user.is_staff and getattr(settings, 'BILLING_ENABLED', True):
             from billing.services import wallet_service
             from billing.utils.errors import AppError
             try:
