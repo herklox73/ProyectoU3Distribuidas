@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import axios from '../api/axios'
 import { formatearTelefono } from '../utils/telefono'
+import { ActividadDiaria, DonaEstados, Embudo, PorHora, TablaCampanas } from '../components/reportes/Graficos'
 
 const ESTADO_LABEL = {
   sent: 'Enviado',
@@ -10,64 +11,60 @@ const ESTADO_LABEL = {
   pending: 'Pendiente',
 }
 
+// Mismos colores que los gráficos (ver components/reportes/Graficos.jsx)
 const ESTADO_COLOR = {
-  sent:      { bg: '#f3f4f6', color: '#6b7280' },
-  delivered: { bg: '#dbeafe', color: '#1d4ed8' },
-  read:      { bg: '#d1fae5', color: '#065f46' },
-  failed:    { bg: '#fee2e2', color: '#991b1b' },
-  pending:   { bg: '#fef3c7', color: '#92400e' },
+  pending:   { bg: '#f0efec', color: '#52514e' },
+  sent:      { bg: '#e6f0fc', color: '#1c5cab' },
+  delivered: { bg: '#cde2fb', color: '#184f95' },
+  read:      { bg: '#104281', color: '#ffffff' },
+  failed:    { bg: '#fde7e7', color: '#b42318' },
 }
 
-function BarraProgreso({ valor, total, color }) {
-  const pct = total > 0 ? Math.round((valor / total) * 100) : 0
+const card = { background: '#fff', borderRadius: 12, padding: '20px 22px', boxShadow: '0 1px 3px #0001' }
+const tituloCard = { fontSize: '0.95rem', fontWeight: 600, color: '#111', margin: 0 }
+const subCard = { fontSize: '0.76rem', color: '#8a8983', marginTop: 3 }
+
+function Tarjeta({ titulo, sub, children, style }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-      <div style={{ flex: 1, height: 6, background: '#e5e7eb', borderRadius: 4, overflow: 'hidden' }}>
-        <div style={{ width: `${pct}%`, height: '100%', background: color, borderRadius: 4, transition: 'width 0.4s' }} />
+    <section style={{ ...card, ...style }}>
+      <div style={{ marginBottom: 16 }}>
+        <h2 style={tituloCard}>{titulo}</h2>
+        {sub && <div style={subCard}>{sub}</div>}
       </div>
-      <span style={{ fontSize: '0.75rem', color: '#888', width: 36, textAlign: 'right' }}>{pct}%</span>
+      {children}
+    </section>
+  )
+}
+
+function Indicador({ valor, label, detalle, pct, color }) {
+  return (
+    <div style={{ ...card, padding: '18px 20px' }}>
+      <div style={{ fontSize: '1.9rem', fontWeight: 700, color: '#0b0b0b', lineHeight: 1, fontVariantNumeric: 'tabular-nums' }}>
+        {Number(valor || 0).toLocaleString('es-EC')}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', color: '#52514e', marginTop: 6 }}>
+        {color && <span style={{ width: 8, height: 8, borderRadius: 2, background: color }} />}
+        {label}
+      </div>
+      {pct !== undefined && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+          <div style={{ flex: 1, height: 5, background: '#f0efec', borderRadius: 3, overflow: 'hidden' }}>
+            <div style={{ width: `${pct}%`, height: '100%', background: color, borderRadius: 3, transition: 'width .4s' }} />
+          </div>
+          <span style={{ fontSize: '0.74rem', color: '#52514e', fontVariantNumeric: 'tabular-nums' }}>{pct}%</span>
+        </div>
+      )}
+      {detalle && <div style={{ fontSize: '0.72rem', color: '#8a8983', marginTop: 6 }}>{detalle}</div>}
     </div>
   )
 }
 
-function GraficaBarras({ datos }) {
-  if (!datos || datos.length === 0) return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 160, color: '#ccc', fontSize: '0.85rem' }}>
-      Sin datos para el periodo seleccionado
-    </div>
-  )
-
-  const maxVal = Math.max(...datos.map(d => Math.max(d.enviados, d.recibidos)), 1)
-
-  return (
-    <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6, height: 160, padding: '0 4px' }}>
-      {datos.map((d, i) => (
-        <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
-          <div style={{ width: '100%', display: 'flex', gap: 2, alignItems: 'flex-end', height: 130 }}>
-            <div style={{
-              flex: 1,
-              height: `${(d.enviados / maxVal) * 100}%`,
-              background: '#6366f1',
-              borderRadius: '3px 3px 0 0',
-              minHeight: d.enviados > 0 ? 4 : 0,
-              transition: 'height 0.3s'
-            }} title={`Enviados: ${d.enviados}`} />
-            <div style={{
-              flex: 1,
-              height: `${(d.recibidos / maxVal) * 100}%`,
-              background: '#10b981',
-              borderRadius: '3px 3px 0 0',
-              minHeight: d.recibidos > 0 ? 4 : 0,
-              transition: 'height 0.3s'
-            }} title={`Recibidos: ${d.recibidos}`} />
-          </div>
-          <span style={{ fontSize: '0.65rem', color: '#aaa', whiteSpace: 'nowrap' }}>
-            {d.dia ? d.dia.slice(5) : ''}
-          </span>
-        </div>
-      ))}
-    </div>
-  )
+function mejorHora(porHora) {
+  const total = porHora.reduce((a, h) => a + h.enviados, 0)
+  const minimo = Math.max(3, total * 0.05)
+  const candidatas = porHora.filter(h => h.enviados >= minimo)
+  if (!candidatas.length) return null
+  return candidatas.reduce((m, h) => (h.tasa_lectura > m.tasa_lectura ? h : m))
 }
 
 export default function ReportesPage() {
@@ -76,6 +73,8 @@ export default function ReportesPage() {
   const [desde, setDesde]       = useState('')
   const [hasta, setHasta]       = useState('')
   const [busqueda, setBusqueda] = useState('')
+  const [descargando, setDescargando] = useState('')
+  const [errorDescarga, setErrorDescarga] = useState('')
 
   // Fecha local (toISOString daría la fecha en UTC: después de las 19:00 en
   // Ecuador ya marcaría el día siguiente)
@@ -103,6 +102,33 @@ export default function ReportesPage() {
     }
   }
 
+  // El archivo se genera en el servidor en ese momento y llega directo al
+  // navegador: no se guarda en ningún lado.
+  const descargar = async (tipo) => {
+    setDescargando(tipo)
+    setErrorDescarga('')
+    try {
+      const params = {}
+      if (desde) params.desde = desde
+      if (hasta) params.hasta = hasta
+      const resp = await axios.get(`/whatsapp/api/reportes/${tipo}/`, { params, responseType: 'blob' })
+      const ext = tipo === 'excel' ? 'xlsx' : 'pdf'
+      const url = URL.createObjectURL(resp.data)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `reporte_masssend_${desde || 'inicio'}_${hasta || 'hoy'}.${ext}`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch (e) {
+      console.error('Error al descargar:', e)
+      setErrorDescarga('No se pudo generar el archivo. Intenta de nuevo.')
+    } finally {
+      setDescargando('')
+    }
+  }
+
   useEffect(() => {
     const d = hace30()
     const h = hoy()
@@ -113,6 +139,10 @@ export default function ReportesPage() {
 
   const resumen   = data?.resumen   || {}
   const porDia    = data?.por_dia   || []
+  const porEstado = data?.por_estado || []
+  const porHora   = data?.por_hora  || []
+  const porCampana = data?.por_campana || []
+  const hora      = mejorHora(porHora)
   const mensajes  = data?.mensajes  || []
   const totalEnv  = resumen.enviados || 0
 
@@ -127,9 +157,38 @@ export default function ReportesPage() {
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: '28px 32px', background: '#f8f9fa' }}>
-      <h1 style={{ fontSize: '1.35rem', fontWeight: 700, color: '#111', marginBottom: 20 }}>
-        Reportes de Mensajería
-      </h1>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 20 }}>
+        <div>
+          <h1 style={{ fontSize: '1.35rem', fontWeight: 700, color: '#111', margin: 0 }}>Reportes de Mensajería</h1>
+          <div style={{ fontSize: '0.8rem', color: '#8a8983', marginTop: 4 }}>
+            Estados de entrega, lectura y rendimiento de tus envíos
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {[
+            { tipo: 'pdf', label: 'Descargar PDF' },
+            { tipo: 'excel', label: 'Descargar Excel' },
+          ].map(b => (
+            <button key={b.tipo} onClick={() => descargar(b.tipo)} disabled={!!descargando}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 7,
+                padding: '8px 16px', background: '#fff', color: '#0b0b0b',
+                border: '1px solid #d9d8d3', borderRadius: 8, fontWeight: 600, fontSize: '0.82rem',
+                cursor: descargando ? 'wait' : 'pointer', opacity: descargando && descargando !== b.tipo ? 0.5 : 1,
+              }}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" />
+              </svg>
+              {descargando === b.tipo ? 'Generando…' : b.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {errorDescarga && (
+        <div style={{ marginBottom: 14, padding: '8px 12px', borderRadius: 8, background: '#fde7e7', color: '#b42318', fontSize: '0.8rem' }}>
+          {errorDescarga}
+        </div>
+      )}
 
       {/* Filtros */}
       <div style={{ display: 'flex', gap: 12, marginBottom: 24, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -171,48 +230,48 @@ export default function ReportesPage() {
 
       {!loading && data && (
         <>
-          {/* Tarjetas de resumen */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14, marginBottom: 24 }}>
-            {[
-              { label: 'Mensajes enviados', valor: resumen.enviados || 0, sub: `${resumen.recibidos || 0} recibidos`, color: '#6366f1' },
-              { label: 'Entregados',        valor: resumen.entregados || 0, color: '#3b82f6' },
-              { label: 'Leídos',            valor: resumen.leidos || 0,     color: '#10b981' },
-              { label: 'Fallidos',          valor: resumen.fallidos || 0,   color: '#ef4444' },
-            ].map((t, i) => (
-              <div key={i} style={{ background: '#fff', borderRadius: 10, padding: '18px 20px', boxShadow: '0 1px 3px #0001' }}>
-                <div style={{ fontSize: '2rem', fontWeight: 700, color: t.color, lineHeight: 1 }}>{t.valor}</div>
-                <div style={{ fontSize: '0.78rem', color: '#888', marginTop: 5 }}>{t.label}</div>
-                {t.sub && <div style={{ fontSize: '0.72rem', color: '#aaa', marginTop: 2 }}>{t.sub}</div>}
-                {totalEnv > 0 && t.label !== 'Mensajes enviados' && (
-                  <div style={{ marginTop: 8 }}>
-                    <BarraProgreso valor={t.valor} total={totalEnv} color={t.color} />
-                  </div>
-                )}
-              </div>
-            ))}
+          {/* Indicadores */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 14, marginBottom: 18 }}>
+            <Indicador valor={resumen.enviados} label="Mensajes enviados" detalle={`${resumen.recibidos || 0} recibidos`} />
+            <Indicador valor={resumen.entregados} label="Entregados" pct={resumen.tasa_entrega} color="#2a78d6" detalle="Incluye los leídos" />
+            <Indicador valor={resumen.leidos} label="Leídos" pct={resumen.tasa_lectura} color="#104281"
+              detalle={totalEnv ? `${resumen.tasa_lectura_entregados}% de los entregados` : null} />
+            <Indicador valor={resumen.fallidos} label="Fallidos" pct={resumen.tasa_fallo} color="#d03b3b" />
           </div>
 
-          {/* Grafica de actividad */}
-          <div style={{ background: '#fff', borderRadius: 10, padding: '20px 24px', boxShadow: '0 1px 3px #0001', marginBottom: 24 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-              <h2 style={{ fontSize: '0.95rem', fontWeight: 600, color: '#111' }}>Actividad diaria</h2>
-
-              <div style={{ display: 'flex', gap: 16 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <div style={{ width: 10, height: 10, borderRadius: 2, background: '#6366f1' }} />
-                  <span style={{ fontSize: '0.75rem', color: '#888' }}>Enviados</span>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <div style={{ width: 10, height: 10, borderRadius: 2, background: '#10b981' }} />
-                  <span style={{ fontSize: '0.75rem', color: '#888' }}>Recibidos</span>
-                </div>
-              </div>
-            </div>
-            <GraficaBarras datos={porDia} />
+          {/* Estado + embudo */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 18, marginBottom: 18 }}>
+            <Tarjeta titulo="Mensajes por estado" sub="Estado actual de cada mensaje enviado">
+              <DonaEstados porEstado={porEstado} total={totalEnv} />
+            </Tarjeta>
+            <Tarjeta titulo="Embudo de entrega" sub="Cuántos mensajes avanzan en cada etapa">
+              <Embudo resumen={resumen} />
+            </Tarjeta>
           </div>
+
+          <Tarjeta titulo="Actividad diaria" sub="Mensajes enviados por día, separados por estado" style={{ marginBottom: 18 }}>
+            <ActividadDiaria porDia={porDia} />
+            {totalEnv > 0 && (
+              <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 12 }}>
+                {[['read', 'Leído', '#104281'], ['delivered', 'Entregado', '#2a78d6'], ['sent', 'Enviado', '#86b6ef'], ['pending', 'Pendiente', '#a3a29b'], ['failed', 'Fallido', '#d03b3b']].map(([k, l, c]) => (
+                  <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.75rem', color: '#52514e' }}>
+                    <span style={{ width: 9, height: 9, borderRadius: 2, background: c }} />{l}
+                  </span>
+                ))}
+              </div>
+            )}
+          </Tarjeta>
+
+          <Tarjeta style={{ marginBottom: 18 }} titulo="Envíos por hora del día"
+            sub={hora ? `Mejor hora para escribir: ${String(hora.hora).padStart(2, '0')}:00, con ${hora.tasa_lectura}% de lectura` : 'Pasa el cursor por una barra para ver su tasa de lectura'}>
+            <PorHora porHora={porHora} />
+          </Tarjeta>
+          <Tarjeta style={{ marginBottom: 18 }} titulo="Rendimiento por campaña" sub="Porcentaje de entrega y lectura sobre lo enviado">
+            <TablaCampanas porCampana={porCampana} />
+          </Tarjeta>
 
           {/* Tabla de mensajes */}
-          <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 3px #0001', overflow: 'hidden' }}>
+          <div style={{ background: '#fff', borderRadius: 12, boxShadow: '0 1px 3px #0001', overflow: 'hidden' }}>
             <div style={{ padding: '16px 20px', borderBottom: '1px solid #f0f2f5', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <h2 style={{ fontSize: '0.95rem', fontWeight: 600, color: '#111' }}>Mensajes recientes</h2>
 

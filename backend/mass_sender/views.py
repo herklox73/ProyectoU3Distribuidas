@@ -23,6 +23,7 @@ from .services import default_message_service
 from .internal_auth import internal_headers, is_internal_request, make_ws_ticket
 from .telefonos import normalizar_telefono
 from .estados import RANGO, aplicar_estado, puede_cambiar
+from . import reportes
 
 def _whatsapp_url(path):
     """Devuelve la URL completa del servicio WhatsApp API."""
@@ -535,92 +536,48 @@ def import_contacts(request):
 # ─────────────────────────────────────────────
 @csrf_exempt
 def api_reportes(request):
+    """Estadísticas del periodo para la página de reportes (ver reportes.py)."""
     user = _get_user(request)
     if not user:
         return JsonResponse({'error': 'No autenticado'}, status=401)
-    desde_str  = request.GET.get('desde', '')
-    hasta_str  = request.GET.get('hasta', '')
+    desde, hasta = reportes.rango_fechas(request)
     status_fil = request.GET.get('status', '')
+    datos = reportes.datos_reporte(user, desde, hasta, status_fil)
+    mensajes = reportes.mensajes_detalle(user, desde, hasta, status_fil, limite=100)
+    for m in mensajes:
+        m.pop('fecha_dt', None)
+        m['mensaje'] = m['mensaje'][:120]
+    datos['mensajes'] = mensajes
+    return JsonResponse(datos)
 
-    hoy = timezone.now().date()
-    try:
-        desde = datetime.strptime(desde_str, '%Y-%m-%d').date() if desde_str else hoy - timedelta(days=30)
-        hasta = datetime.strptime(hasta_str, '%Y-%m-%d').date() if hasta_str else hoy
-    except ValueError:
-        desde = hoy - timedelta(days=30)
-        hasta = hoy
 
-    qs = Message.objects.filter(
-        owner=user,
-        sent_at__date__gte=desde,
-        sent_at__date__lte=hasta,
-    )
+def _descarga(contenido, tipo, nombre):
+    """Envía el archivo generado en memoria; no se guarda nada en el servidor."""
+    from django.http import HttpResponse
+    resp = HttpResponse(contenido, content_type=tipo)
+    resp['Content-Disposition'] = f'attachment; filename="{nombre}"'
+    resp['Cache-Control'] = 'no-store'
+    return resp
 
-    if status_fil:
-        qs = qs.filter(delivery_status=status_fil)
 
-    outbound = qs.filter(direction='outbound')
-    inbound  = qs.filter(direction='inbound')
+def api_reportes_excel(request):
+    user = _get_user(request)
+    if not user:
+        return JsonResponse({'error': 'No autenticado'}, status=401)
+    desde, hasta = reportes.rango_fechas(request)
+    contenido = reportes.excel_reporte(user, desde, hasta, request.GET.get('status', ''))
+    return _descarga(contenido,
+                     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                     f'reporte_masssend_{desde}_{hasta}.xlsx')
 
-    enviados   = outbound.count()
-    recibidos  = inbound.count()
-    # Un mensaje leído también fue entregado: "Entregados" incluye los leídos
-    entregados = outbound.filter(delivery_status__in=['delivered', 'read']).count()
-    leidos     = outbound.filter(delivery_status='read').count()
-    fallidos   = outbound.filter(delivery_status='failed').count()
-    enviados_puro = outbound.filter(delivery_status='sent').count()
 
-    resumen = {
-        'enviados': enviados,
-        'recibidos': recibidos,
-        'entregados': entregados,
-        'leidos': leidos,
-        'fallidos': fallidos,
-        'enviados_puro': enviados_puro,
-    }
-
-    # Por día
-    from django.db.models.functions import TruncDate
-    por_dia_qs = (
-        qs.annotate(dia=TruncDate('sent_at'))
-        .values('dia')
-        .annotate(
-            enviados=Count('id', filter=Q(direction='outbound')),
-            recibidos=Count('id', filter=Q(direction='inbound')),
-        )
-        .order_by('dia')
-    )
-    por_dia = [
-        {
-            'dia': str(row['dia']),
-            'enviados': row['enviados'],
-            'recibidos': row['recibidos'],
-        }
-        for row in por_dia_qs if row['dia']
-    ]
-
-    # Últimos 100 mensajes salientes
-    ultimos = outbound.order_by('-sent_at')[:100]
-    mensajes = []
-    for m in ultimos:
-        # Buscar nombre de contacto
-        contact = Contact.objects.filter(owner=user, phone_number=m.phone_number).first()
-        campana = m.campaign.name if m.campaign else ''
-        mensajes.append({
-            'id': m.id,
-            'telefono': m.phone_number,
-            'nombre': contact.full_name if contact else m.phone_number,
-            'campana': campana,
-            'mensaje': m.content[:120] if m.content else '',
-            'status': m.delivery_status or 'sent',
-            'fecha': timezone.localtime(m.sent_at).strftime('%d/%m/%Y %H:%M') if m.sent_at else '',
-        })
-
-    return JsonResponse({
-        'resumen': resumen,
-        'por_dia': por_dia,
-        'mensajes': mensajes,
-    })
+def api_reportes_pdf(request):
+    user = _get_user(request)
+    if not user:
+        return JsonResponse({'error': 'No autenticado'}, status=401)
+    desde, hasta = reportes.rango_fechas(request)
+    contenido = reportes.pdf_reporte(user, desde, hasta, request.GET.get('status', ''))
+    return _descarga(contenido, 'application/pdf', f'reporte_masssend_{desde}_{hasta}.pdf')
 
 
 # ─────────────────────────────────────────────

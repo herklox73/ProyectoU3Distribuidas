@@ -36,6 +36,8 @@ urlpatterns = [
 
     # ── Reportes ──────────────────────────────────────────────────────────
     path('api/reportes/', views.api_reportes, name='api_reportes'),
+    path('api/reportes/excel/', views.api_reportes_excel, name='api_reportes_excel'),
+    path('api/reportes/pdf/', views.api_reportes_pdf, name='api_reportes_pdf'),
     path('reportes/', views.reportes_view, name='reportes'),
 
     # ── Progreso campaña ──────────────────────────────────────────────────
