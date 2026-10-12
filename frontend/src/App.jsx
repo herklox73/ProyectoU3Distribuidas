@@ -348,7 +348,7 @@ function Layout() {
         {visibleIds.includes('inicio')         && <div style={{ display: pagina === 'inicio'    ? 'contents' : 'none' }}><InicioPage onNavegar={setPagina} /></div>}
         {visibleIds.includes('chat')           && <div style={{ display: pagina === 'chat'      ? 'contents' : 'none' }}><ChatPage /></div>}
         {visibleIds.includes('campanas')       && <div style={{ display: pagina === 'campanas'  ? 'contents' : 'none' }}><CampanasPage /></div>}
-        {visibleIds.includes('contactos')      && <div style={{ display: pagina === 'contactos' ? 'contents' : 'none' }}><ContactosPage /></div>}
+        {visibleIds.includes('contactos')      && <div style={{ display: pagina === 'contactos' ? 'contents' : 'none' }}><ContactosPage onNavegar={setPagina} /></div>}
         {visibleIds.includes('importar')       && <div style={{ display: pagina === 'importar'  ? 'contents' : 'none' }}><ImportarContactosPage /></div>}
         {visibleIds.includes('mensajes')       && <div style={{ display: pagina === 'mensajes'  ? 'contents' : 'none' }}><MensajesPage /></div>}
         {visibleIds.includes('reportes')       && <div style={{ display: pagina === 'reportes'  ? 'contents' : 'none' }}><ReportesPage /></div>}

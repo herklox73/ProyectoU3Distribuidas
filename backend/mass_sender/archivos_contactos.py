@@ -8,9 +8,11 @@ Formatos aceptados:
   - LibreOffice / OpenOffice: .ods            (lector propio, sin dependencias)
   - Texto: .csv .txt .tsv                     (separador detectado solo)
 
-El archivo se lee en memoria (o en el archivo temporal que Django borra al
-terminar la petición) y se devuelve como encabezados + filas de texto. No se
-guarda en el servidor.
+Los Excel pueden pesar hasta 1 GB (por ejemplo, con imágenes o formatos):
+se leen desde el archivo temporal que Django crea durante la subida, por
+partes, sin cargarlo entero en memoria. Django borra ese temporal al terminar
+la petición, así que no se guarda nada en el servidor. Lo que sí tiene tope es
+la cantidad de filas (MAX_FILAS), porque todas viajan a la vista previa.
 """
 import csv
 import io
@@ -21,10 +23,12 @@ from xml.etree import ElementTree as ET
 
 EXT_EXCEL = {'.xlsx', '.xlsm', '.xltx', '.xltm'}
 EXT_TEXTO = {'.csv', '.txt', '.tsv'}
-EXTENSIONES = EXT_EXCEL | EXT_TEXTO | {'.xls', '.xlsb', '.ods'}
+EXT_HOJAS = EXT_EXCEL | {'.xls', '.xlsb', '.ods'}      # Excel y similares
+EXTENSIONES = EXT_HOJAS | EXT_TEXTO
 
-MAX_BYTES = 50 * 1024 * 1024
-MAX_FILAS = 100_000
+MAX_BYTES_EXCEL = 1024 * 1024 * 1024    # 1 GB
+MAX_BYTES_TEXTO = 50 * 1024 * 1024      # 50 MB
+MAX_FILAS = 200_000
 MAX_COLUMNAS = 60
 
 
@@ -76,23 +80,26 @@ def _limitar(iterable):
 
 
 # ── Lectores por formato ────────────────────────────────────────────────
-def _leer_xlsx(datos):
+def _leer_xlsx(ruta):
     from openpyxl import load_workbook
-    try:
-        wb = load_workbook(io.BytesIO(datos), read_only=True, data_only=True)
-    except Exception:
-        raise ArchivoInvalido('No se pudo abrir el Excel. ¿Está dañado o protegido con contraseña?')
-    try:
-        ws = wb.worksheets[0]
-        return _limitar(ws.iter_rows(values_only=True))
-    finally:
-        wb.close()
+    # Se pasa el archivo abierto (no la ruta) para que openpyxl no rechace
+    # un xlsx guardado con otra extensión (.xls, .upload, ...).
+    with open(ruta, 'rb') as fh:
+        try:
+            wb = load_workbook(fh, read_only=True, data_only=True)
+        except Exception:
+            raise ArchivoInvalido('No se pudo abrir el Excel. ¿Está dañado o protegido con contraseña?')
+        try:
+            ws = wb.worksheets[0]
+            return _limitar(ws.iter_rows(values_only=True))
+        finally:
+            wb.close()
 
 
-def _leer_xls(datos):
+def _leer_xls(ruta):
     import xlrd
     try:
-        libro = xlrd.open_workbook(file_contents=datos)
+        libro = xlrd.open_workbook(filename=ruta, on_demand=True)
     except Exception:
         raise ArchivoInvalido('No se pudo abrir el Excel (.xls). ¿Está dañado o protegido con contraseña?')
     hoja = libro.sheet_by_index(0)
@@ -112,10 +119,10 @@ def _leer_xls(datos):
     return _limitar(fila(r) for r in range(hoja.nrows))
 
 
-def _leer_xlsb(datos):
+def _leer_xlsb(ruta):
     from pyxlsb import open_workbook
     try:
-        with open_workbook(io.BytesIO(datos)) as wb:
+        with open_workbook(ruta) as wb:
             with wb.get_sheet(1) as hoja:
                 return _limitar([c.v for c in fila] for fila in hoja.rows())
     except ArchivoInvalido:
@@ -124,48 +131,52 @@ def _leer_xlsb(datos):
         raise ArchivoInvalido('No se pudo abrir el Excel binario (.xlsb).')
 
 
-def _leer_ods(datos):
-    """Lee la primera hoja de un .ods (es un zip con content.xml)."""
-    NS = {
-        'table': 'urn:oasis:names:tc:opendocument:xmlns:table:1.0',
-        'text': 'urn:oasis:names:tc:opendocument:xmlns:text:1.0',
-        'office': 'urn:oasis:names:tc:opendocument:xmlns:office:1.0',
-    }
-    t = '{%s}' % NS['table']
-    o = '{%s}' % NS['office']
+def _leer_ods(ruta):
+    """Lee la primera hoja de un .ods (un zip con content.xml), por partes."""
+    T = '{urn:oasis:names:tc:opendocument:xmlns:table:1.0}'
+    O = '{urn:oasis:names:tc:opendocument:xmlns:office:1.0}'
+    P = '{urn:oasis:names:tc:opendocument:xmlns:text:1.0}p'
     try:
-        with zipfile.ZipFile(io.BytesIO(datos)) as z:
-            xml = z.read('content.xml')
+        z = zipfile.ZipFile(ruta)
+        xml = z.open('content.xml')
     except Exception:
         raise ArchivoInvalido('No se pudo abrir el archivo .ods.')
-    raiz = ET.fromstring(xml)
-    hoja = raiz.find('.//table:table', NS)
-    if hoja is None:
-        raise ArchivoInvalido('El archivo .ods no tiene hojas.')
 
     filas = []
-    for fila in hoja.iter(f'{t}table-row'):
-        rep_f = min(int(fila.get(f'{t}number-rows-repeated', '1')), 1000)
-        celdas = []
-        for celda in fila:
-            if celda.tag not in (f'{t}table-cell', f'{t}covered-table-cell'):
+    hojas = 0
+    with z, xml:
+        for evento, elem in ET.iterparse(xml, events=('start', 'end')):
+            if evento == 'start':
+                if elem.tag == f'{T}table':
+                    hojas += 1
                 continue
-            rep_c = min(int(celda.get(f'{t}number-columns-repeated', '1')), MAX_COLUMNAS)
-            tipo = celda.get(f'{o}value-type')
-            if tipo in ('float', 'percentage', 'currency'):
-                try:
-                    valor = float(celda.get(f'{o}value'))
-                except (TypeError, ValueError):
-                    valor = ''
-            else:
-                valor = '\n'.join(''.join(p.itertext()) for p in celda.findall('text:p', NS))
-            celdas.extend([valor] * rep_c)
-        if any(_texto(c) for c in celdas):
-            filas.extend([celdas] * rep_f)
-        else:
-            filas.append(celdas)   # filas vacías repetidas: se descartan luego
-        if len(filas) > MAX_FILAS + 1:
-            raise ArchivoInvalido(f'El archivo tiene más de {MAX_FILAS:,} filas. Divídelo en partes.'.replace(',', '.'))
+            if hojas != 1:
+                if elem.tag == f'{T}table':
+                    break            # solo la primera hoja
+                continue
+            if elem.tag != f'{T}table-row':
+                continue
+            rep_f = min(int(elem.get(f'{T}number-rows-repeated', '1')), 1000)
+            celdas = []
+            for celda in elem:
+                if celda.tag not in (f'{T}table-cell', f'{T}covered-table-cell'):
+                    continue
+                rep_c = min(int(celda.get(f'{T}number-columns-repeated', '1')), MAX_COLUMNAS)
+                if celda.get(f'{O}value-type') in ('float', 'percentage', 'currency'):
+                    try:
+                        valor = float(celda.get(f'{O}value'))
+                    except (TypeError, ValueError):
+                        valor = ''
+                else:
+                    valor = '\n'.join(''.join(p.itertext()) for p in celda.findall(P))
+                celdas.extend([valor] * rep_c)
+            elem.clear()
+            if any(_texto(c) for c in celdas):
+                filas.extend([celdas] * rep_f)
+            if len(filas) > MAX_FILAS + 1:
+                raise ArchivoInvalido(f'El archivo tiene más de {MAX_FILAS:,} filas. Divídelo en partes.'.replace(',', '.'))
+    if hojas == 0:
+        raise ArchivoInvalido('El archivo .ods no tiene hojas.')
     return filas
 
 
@@ -194,26 +205,54 @@ def leer_archivo(archivo, separador=''):
     ext = '.' + nombre.rsplit('.', 1)[-1] if '.' in nombre else ''
     if ext not in EXTENSIONES:
         raise ArchivoInvalido('Formato no soportado. Usa Excel (.xlsx, .xls, .xlsm, .xlsb), .ods o .csv.')
-    if archivo.size > MAX_BYTES:
-        raise ArchivoInvalido('El archivo supera el límite de 50 MB.')
+    if ext in EXT_HOJAS and archivo.size > MAX_BYTES_EXCEL:
+        raise ArchivoInvalido('El Excel supera el límite de 1 GB.')
+    if ext in EXT_TEXTO and archivo.size > MAX_BYTES_TEXTO:
+        raise ArchivoInvalido('El CSV supera el límite de 50 MB. Guárdalo como Excel (.xlsx) para subir hasta 1 GB.')
 
-    datos = archivo.read()
-    if ext in EXT_EXCEL:
-        filas = _leer_xlsx(datos)
-    elif ext == '.xls':
-        # Algunos sistemas exportan HTML o CSV con extensión .xls
-        if datos[:8] == b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1':
-            filas = _leer_xls(datos)
-        elif datos[:2] == b'PK':
-            filas = _leer_xlsx(datos)
-        elif re.match(rb'\s*<', datos[:200]):
-            raise ArchivoInvalido('Este .xls es en realidad una página web. Ábrelo en Excel y guárdalo como .xlsx.')
-        else:
-            filas = _leer_texto(datos, separador or '\t')
-    elif ext == '.xlsb':
-        filas = _leer_xlsb(datos)
-    elif ext == '.ods':
-        filas = _leer_ods(datos)
+    if ext in EXT_TEXTO:
+        return _limpiar(_leer_texto(archivo.read(), separador))
+
+    # Hojas de cálculo: se leen desde una ruta en disco (el temporal de la
+    # subida). Si el archivo es pequeño y Django lo tuvo en memoria, se
+    # escribe un temporal propio que se borra al terminar.
+    import os
+    import tempfile
+    propio = None
+    if hasattr(archivo, 'temporary_file_path'):
+        ruta = archivo.temporary_file_path()
     else:
-        filas = _leer_texto(datos, separador)
+        fd, propio = tempfile.mkstemp(suffix=ext)
+        with os.fdopen(fd, 'wb') as out:
+            for trozo in archivo.chunks():
+                out.write(trozo)
+        ruta = propio
+    try:
+        with open(ruta, 'rb') as fh:
+            cabecera = fh.read(512)
+        if ext in EXT_EXCEL:
+            filas = _leer_xlsx(ruta)
+        elif ext == '.xls':
+            # Algunos sistemas exportan HTML, CSV o xlsx con extensión .xls
+            if cabecera[:8] == b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1':
+                filas = _leer_xls(ruta)
+            elif cabecera[:2] == b'PK':
+                filas = _leer_xlsx(ruta)
+            elif re.match(rb'\s*<', cabecera[:200]):
+                raise ArchivoInvalido('Este .xls es en realidad una página web. Ábrelo en Excel y guárdalo como .xlsx.')
+            else:
+                if os.path.getsize(ruta) > MAX_BYTES_TEXTO:
+                    raise ArchivoInvalido('Este .xls es en realidad texto y supera 50 MB. Guárdalo como .xlsx.')
+                with open(ruta, 'rb') as fh:
+                    filas = _leer_texto(fh.read(), separador or '\t')
+        elif ext == '.xlsb':
+            filas = _leer_xlsb(ruta)
+        else:
+            filas = _leer_ods(ruta)
+    finally:
+        if propio:
+            try:
+                os.remove(propio)
+            except OSError:
+                pass
     return _limpiar(filas)

@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useMemo } from 'react'
 import { sileo } from 'sileo'
 import axios from '../api/axios'
 
@@ -15,7 +15,9 @@ function normalizarTelefono(raw) {
   if (limpio.startsWith('+')) limpio = limpio.slice(1)
   if (!/^\d+$/.test(limpio)) return { ok: false, tel: '', err: 'Caracteres inválidos' }
   // +593 0987654321 (el 0 sobra) y 987654321 (sin 0 ni código) -> 593987654321
-  if (/^5930\d{9}$/.test(limpio)) limpio = '593' + limpio.slice(4)
+  // Al importar masivamente: 593 0983706769 -> 593983706769 (se quita el 0)
+  let corregido = false
+  if (/^5930\d{9}$/.test(limpio)) { limpio = '593' + limpio.slice(4); corregido = true }
   else if (/^9\d{8}$/.test(limpio)) limpio = '593' + limpio
 
   // Local Ecuador (empieza con 0)
@@ -32,7 +34,7 @@ function normalizarTelefono(raw) {
       return { ok: false, tel: '', err: 'Número fijo de Ecuador — solo móviles 5939XXXXXXXX' }
     if (limpio.length !== 12)
       return { ok: false, tel: '', err: `Móvil Ecuador inválido: ${limpio.length} dígitos (se esperan 12)` }
-    return { ok: true, tel: limpio, err: null }
+    return { ok: true, tel: limpio, err: null, corregido }
   }
 
   // Internacional
@@ -42,8 +44,11 @@ function normalizarTelefono(raw) {
 }
 
 // Formatos que acepta el servidor (ver backend/mass_sender/archivos_contactos.py)
-const EXTENSIONES = ['.xlsx', '.xls', '.xlsm', '.xlsb', '.xltx', '.xltm', '.ods', '.csv', '.txt', '.tsv']
-const MAX_MB = 50
+const EXT_EXCEL = ['.xlsx', '.xls', '.xlsm', '.xlsb', '.xltx', '.xltm', '.ods']
+const EXT_TEXTO = ['.csv', '.txt', '.tsv']
+const EXTENSIONES = [...EXT_EXCEL, ...EXT_TEXTO]
+const MAX_MB_EXCEL = 1024   // 1 GB
+const MAX_MB_TEXTO = 50
 const LOTE_IMPORTACION = 1000   // contactos por petición al importar
 const FILAS_VISTA = 300          // filas que se dibujan en la vista previa
 
@@ -89,6 +94,7 @@ export default function ImportarContactosPage() {
   const [resultado, setResultado]   = useState(null)
   const [dragging, setDragging]     = useState(false)
   const [leyendo, setLeyendo]       = useState(false)
+  const [subida, setSubida]         = useState(null)   // % de subida del archivo
   const [progreso, setProgreso]     = useState(null)   // { hechos, total }
   const inputRef                    = useRef(null)
 
@@ -100,7 +106,12 @@ export default function ImportarContactosPage() {
     if (!EXTENSIONES.some(ext => nombre.endsWith(ext))) {
       sileo.error({ title: 'Formato inválido', description: 'Usa Excel (.xlsx, .xls, .xlsm, .xlsb), .ods o .csv' }); return
     }
-    if (file.size > MAX_MB * 1024 * 1024) { sileo.error({ title: 'Archivo muy grande', description: `El límite es ${MAX_MB} MB` }); return }
+    const esExcel = EXT_EXCEL.some(ext => nombre.endsWith(ext))
+    const limiteMb = esExcel ? MAX_MB_EXCEL : MAX_MB_TEXTO
+    if (file.size > limiteMb * 1024 * 1024) {
+      sileo.error({ title: 'Archivo muy grande', description: esExcel ? 'El límite para Excel es 1 GB' : 'El límite para CSV es 50 MB. Guárdalo como Excel (.xlsx) para subir hasta 1 GB.' })
+      return
+    }
     setArchivo(file)
     setResultado(null)
     setLeyendo(true)
@@ -108,7 +119,11 @@ export default function ImportarContactosPage() {
       const form = new FormData()
       form.append('archivo', file)
       if (sep) form.append('separador', sep)
-      const { data } = await axios.post('/whatsapp/api/contactos/leer-archivo/', form)
+      setSubida(0)
+      const { data } = await axios.post('/whatsapp/api/contactos/leer-archivo/', form, {
+        timeout: 0,
+        onUploadProgress: (ev) => { if (ev.total) setSubida(Math.round((ev.loaded / ev.total) * 100)) },
+      })
       const rows = data.rows.map((cells, i) => ({ _i: i, cells }))
       setMapeo(autoMap(data.headers))
       setParsed({ headers: data.headers, rows })
@@ -120,6 +135,7 @@ export default function ImportarContactosPage() {
       if (inputRef.current) inputRef.current.value = ''
     } finally {
       setLeyendo(false)
+      setSubida(null)
     }
   }, [])
 
@@ -134,13 +150,14 @@ export default function ImportarContactosPage() {
   }
 
   // Construir filas con datos ya mapeados + validación de teléfono
-  const filasVistas = parsed ? parsed.rows.map(r => {
-    const get = (campo) => {
-      const idx = Object.entries(mapeo).find(([, v]) => v === campo)?.[0]
-      return idx != null ? (r.cells[idx] || '') : ''
-    }
+  const filasVistas = useMemo(() => {
+    if (!parsed) return []
+    const col = {}
+    for (const [idx, campo] of Object.entries(mapeo)) if (campo && col[campo] == null) col[campo] = Number(idx)
+    return parsed.rows.map(r => {
+    const get = (campo) => (col[campo] != null ? (r.cells[col[campo]] || '') : '')
     const rawTel = get('telefono')
-    const { ok, tel, err } = rawTel ? normalizarTelefono(rawTel) : { ok: false, tel: '', err: 'Sin columna teléfono' }
+    const { ok, tel, err, corregido } = rawTel ? normalizarTelefono(rawTel) : { ok: false, tel: '', err: 'Sin columna teléfono' }
     return {
       _i: r._i,
       cells: r.cells,
@@ -150,8 +167,11 @@ export default function ImportarContactosPage() {
       notas:    get('notas'),
       telOk:    ok,
       telErr:   err,
+      corregido: Boolean(ok && corregido),
     }
-  }) : []
+    })
+  }, [parsed, mapeo])
+  const corregidos      = filasVistas.filter(r => r.corregido).length
 
   const filasValidas    = filasVistas.filter(r => r.telOk)
   const filasInvalidas  = filasVistas.filter(r => !r.telOk)
@@ -257,9 +277,11 @@ export default function ImportarContactosPage() {
               <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
             </svg>
             <p style={{ color: '#7c3aed', fontWeight: 600, margin: '0 0 4px' }}>
-              {leyendo ? `Leyendo ${archivo?.name || 'archivo'}…` : archivo ? archivo.name : 'Arrastra tu archivo aquí o haz clic para seleccionar'}
+              {leyendo
+                ? (subida != null && subida < 100 ? `Subiendo ${archivo?.name || 'archivo'}… ${subida}%` : `Leyendo ${archivo?.name || 'archivo'}…`)
+                : archivo ? archivo.name : 'Arrastra tu archivo aquí o haz clic para seleccionar'}
             </p>
-            <p style={{ fontSize: '0.75rem', color: '#aaa', margin: 0 }}>Excel (.xlsx, .xls, .xlsm, .xlsb), .ods o .csv · máximo {MAX_MB} MB</p>
+            <p style={{ fontSize: '0.75rem', color: '#aaa', margin: 0 }}>Excel (.xlsx, .xls, .xlsm, .xlsb) u .ods hasta 1 GB · .csv hasta 50 MB</p>
             <input ref={inputRef} type="file" accept={EXTENSIONES.join(',')} onChange={onFileChange} style={{ display: 'none' }} />
           </div>
 
@@ -369,6 +391,9 @@ export default function ImportarContactosPage() {
                   {filasInvalidas.length > 0 && (
                     <span style={{ color: '#ef4444', marginLeft: 8 }}>· {filasInvalidas.length} rechazadas (fijos/inválidos)</span>
                   )}
+                  {corregidos > 0 && (
+                    <span style={{ color: '#1c5cab', marginLeft: 8 }} title="Ejemplo: 593 0983706769 se guarda como 593983706769">· {corregidos} corregidos (se quitó el 0 después del 593)</span>
+                  )}
                 </span>
               </div>
 
@@ -393,6 +418,9 @@ export default function ImportarContactosPage() {
                       </td>
                       <td style={{ padding: '7px 10px', fontFamily: 'monospace', fontWeight: 600, color: r.telOk ? '#374151' : '#ef4444' }}>
                         {r.telefono || <span style={{ color: '#ccc' }}>—</span>}
+                        {r.corregido && (
+                          <span title="Se quitó el 0 después del 593" style={{ marginLeft: 6, padding: '1px 6px', borderRadius: 10, fontSize: '0.62rem', fontFamily: "'Figtree Variable', system-ui, sans-serif", fontWeight: 600, background: '#e6f0fc', color: '#1c5cab' }}>corregido</span>
+                        )}
                       </td>
                       <td style={{ padding: '7px 10px' }}>{r.nombre || <span style={{ color: '#ccc' }}>—</span>}</td>
                       <td style={{ padding: '7px 10px', color: '#888' }}>

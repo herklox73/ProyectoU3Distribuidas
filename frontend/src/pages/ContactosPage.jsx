@@ -82,7 +82,7 @@ const CSV_CAMPOS = [
   { value: 'notas', label: 'Notas' },
 ]
 
-export default function ContactosPage() {
+export default function ContactosPage({ onNavegar } = {}) {
   const [contactos, setContactos]   = useState([])
   const [total, setTotal]           = useState(0)
   const [page, setPage]             = useState(1)
@@ -295,8 +295,12 @@ export default function ContactosPage() {
           Contactos <span style={{ fontSize: '0.85rem', color: '#aaa', fontWeight: 400 }}>({total})</span>
         </h1>
         <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={() => { setModal('importar'); setMsg(''); setImportResult(null); setCsvArchivo(null); setCsvParsed(null) }} style={{ padding: '8px 18px', background: '#6366f1', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: '0.85rem' }}>
-            Importar CSV
+          <button onClick={() => {
+            // Lleva a "Importar contactos" (Excel hasta 1 GB, .ods y .csv)
+            if (onNavegar) { onNavegar('importar'); return }
+            setModal('importar'); setMsg(''); setImportResult(null); setCsvArchivo(null); setCsvParsed(null)
+          }} style={{ padding: '8px 18px', background: '#6366f1', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: '0.85rem' }}>
+            Importar Excel / CSV
           </button>
           <button onClick={abrirNuevo} style={{ padding: '8px 18px', background: '#25d366', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: '0.85rem' }}>
             + Agregar contacto

@@ -22,7 +22,7 @@ echo "==> Iniciando gunicorn en puerto 8000..."
 exec gunicorn core.wsgi:application \
     --bind 0.0.0.0:8000 \
     --workers ${GUNICORN_WORKERS:-1} \
-    --timeout 120 \
+    --timeout ${GUNICORN_TIMEOUT:-300} \
     --log-level info \
     --access-logfile - \
     --error-logfile -
