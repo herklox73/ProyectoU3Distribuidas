@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { sileo } from 'sileo'
 import axios from '../api/axios'
+import { useAlMostrar } from '../context/PaginaActiva'
 import SelectorEtiquetas from '../components/campanas/SelectorEtiquetas'
 
 // Límites de WhatsApp (bytes)
@@ -94,6 +95,7 @@ export default function CampanasPage() {
   }
 
   useEffect(() => { cargar() }, [])
+  useAlMostrar('campanas', () => cargar())   // datos frescos al volver a la página
 
   // Polling automático para campañas en ejecución
   useEffect(() => {

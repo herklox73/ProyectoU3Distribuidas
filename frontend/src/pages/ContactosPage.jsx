@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { sileo } from 'sileo'
 import axios from '../api/axios'
+import { useAlMostrar } from '../context/PaginaActiva'
 import FlagEC from '../components/FlagEC'
 import { formatearTelefono } from '../utils/telefono'
 import { useAuth } from '../context/AuthContext'
@@ -96,6 +97,9 @@ function ExportarContactosAdmin() {
       .then(({ data }) => setUsuarios(data.usuarios || []))
       .catch(() => setUsuarios([]))
   }, [])
+  useAlMostrar('contactos', () => {
+    axios.get('/whatsapp/api/usuarios-contactos/').then(({ data }) => setUsuarios(data.usuarios || [])).catch(() => {})
+  })
 
   const total = usuarios.reduce((a, u) => a + u.contactos, 0)
 
@@ -182,6 +186,7 @@ export default function ContactosPage({ onNavegar } = {}) {
   }
 
   useEffect(() => { cargar(1); setPage(1) }, [busqueda, tagFiltro, estadoFiltro])
+  useAlMostrar('contactos', () => cargar(page))   // datos frescos al volver a la página
 
   // Limpiar selección al cambiar de página/filtro
   useEffect(() => { setSeleccion(new Set()) }, [busqueda, tagFiltro, estadoFiltro, page])

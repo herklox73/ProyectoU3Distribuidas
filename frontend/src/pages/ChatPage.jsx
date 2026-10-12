@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import axios from '../api/axios'
+import { useAlMostrar } from '../context/PaginaActiva'
 import { sileo } from 'sileo'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { useWa } from '../context/WaContext'
@@ -27,6 +28,8 @@ export default function ChatPage() {
       setLoading(false)
     }
   }
+
+  useAlMostrar('chat', () => cargarMensajes())   // al volver al chat, sin esperar 5 s
 
   useEffect(() => {
     cargarMensajes()

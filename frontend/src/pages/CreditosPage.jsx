@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useAlMostrar } from '../context/PaginaActiva'
 import { listPacks, getWallet, getWalletHistory, startCheckout } from '../api/billing'
 
 const boxStyle = { background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, padding: 24, maxWidth: 720, marginBottom: 24 }
@@ -54,6 +55,7 @@ export default function CreditosPage() {
   }
 
   useEffect(() => { loadAll() }, [])
+  useAlMostrar('creditos', () => loadAll())
 
   const handleBuy = async (packId, provider) => {
     setError('')

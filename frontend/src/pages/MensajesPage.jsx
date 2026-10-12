@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { sileo } from 'sileo'
 import axios from '../api/axios'
+import { useAlMostrar } from '../context/PaginaActiva'
 import { formatearTelefono } from '../utils/telefono'
 
 const STATUS_LABEL = { sent: 'Enviado', delivered: 'Entregado', read: 'Leído', failed: 'Fallido', pending: 'Pendiente' }
@@ -38,6 +39,7 @@ export default function MensajesPage() {
   }
 
   useEffect(() => { cargar(1); setPage(1); setSeleccion(new Set()) }, [busqueda, direccion])
+  useAlMostrar('mensajes', () => cargar(page))   // datos frescos al volver a la página
 
   const toggleSeleccion = (id) => setSeleccion(prev => {
     const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n

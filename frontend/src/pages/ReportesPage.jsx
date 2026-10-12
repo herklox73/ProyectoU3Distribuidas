@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import axios from '../api/axios'
+import { useAlMostrar } from '../context/PaginaActiva'
 import { useAuth } from '../context/AuthContext'
 import { formatearTelefono } from '../utils/telefono'
 import { IconoExcel, IconoPDF, Girando } from '../components/reportes/IconosArchivo'
@@ -153,6 +154,7 @@ export default function ReportesPage() {
     setHasta(h)
     cargar(d, h)
   }, [])
+  useAlMostrar('reportes', () => cargar())   // datos frescos al volver a la página
 
   const resumen   = data?.resumen   || {}
   const porDia    = data?.por_dia   || []

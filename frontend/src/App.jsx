@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Toaster } from 'sileo'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { WaProvider, useWa } from './context/WaContext'
+import { PaginaActivaProvider } from './context/PaginaActiva'
 import AuthFlow from './pages/AuthFlow'
 import ResetPasswordPage from './pages/ResetPasswordPage'
 import InicioPage from './pages/InicioPage'
@@ -341,6 +342,7 @@ function Layout() {
       </aside>
 
       <main className="main">
+        <PaginaActivaProvider pagina={pagina}>
         {/* Cada página solo se monta si el rol del usuario la tiene
             habilitada (visibleIds); así una cuenta normal nunca llega a
             pedir datos de endpoints solo-admin (ej. la cola de correos),
@@ -358,6 +360,7 @@ function Layout() {
         {visibleIds.includes('seguridad')      && <div style={{ display: pagina === 'seguridad' ? 'contents' : 'none' }}><SecuritySettingsPage /></div>}
         {visibleIds.includes('creditos')       && <div style={{ display: pagina === 'creditos'  ? 'contents' : 'none' }}><CreditosPage /></div>}
         {visibleIds.includes('asistente')      && <div style={{ display: pagina === 'asistente' ? 'contents' : 'none' }}><AsistentePage /></div>}
+        </PaginaActivaProvider>
       </main>
 
       <style>{`
