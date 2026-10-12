@@ -134,7 +134,17 @@ export default function WhatsAppPage() {
           <div style={{ width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
               <p style={{ fontSize: '0.82rem', color: '#888', marginBottom: 16 }}>Código QR para escanear</p>
 
-              {waListo ? (
+              {waListo && estado.restriccion ? (
+                <div style={{ textAlign: 'center', padding: '20px 18px', background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 12 }}>
+                  <div style={{ fontSize: '2.2rem', marginBottom: 8 }}>⚠️</div>
+                  <p style={{ fontSize: '0.9rem', fontWeight: 700, color: '#9a3412' }}>Conectado, pero WhatsApp restringió este número</p>
+                  <p style={{ fontSize: '0.78rem', color: '#7c2d12', marginTop: 6, lineHeight: 1.5 }}>
+                    En las últimas 24 h WhatsApp bloqueó {estado.restriccion.bloqueados_24h} mensaje(s) (error 463, último: {estado.restriccion.ultimo}).
+                    Por un tiempo no deja escribir a contactos nuevos desde el sistema.
+                    No lances campañas hasta que pase: insistir puede terminar en un bloqueo definitivo.
+                  </p>
+                </div>
+              ) : waListo ? (
                 <div style={{ textAlign: 'center', padding: '28px 20px' }}>
                   <div style={{ fontSize: '2.5rem', marginBottom: 10 }}>✅</div>
                   <p style={{ fontSize: '0.88rem', fontWeight: 700, color: '#065f46' }}>WhatsApp conectado</p>

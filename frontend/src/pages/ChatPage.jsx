@@ -5,7 +5,7 @@ import { sileo } from 'sileo'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { useWa } from '../context/WaContext'
 
-const TICK = { pending: '🕐', sent: '✓', delivered: '✓✓', read: '✓✓', failed: '✗' }
+const TICK = { pending: '🕐', sent: '✓', delivered: '✓✓', read: '✓✓', failed: '✗', blocked: '⊘' }
 
 export default function ChatPage() {
   const [mensajes, setMensajes]     = useState({})

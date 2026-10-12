@@ -141,6 +141,7 @@ class Message(models.Model):
         ('delivered', 'Entregado'),
         ('read', 'Leído'),
         ('failed', 'Fallido'),
+        ('blocked', 'Bloqueado por WhatsApp'),
     ]
 
     owner = models.ForeignKey(

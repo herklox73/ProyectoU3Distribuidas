@@ -13,7 +13,8 @@ así que un estado nunca retrocede: 'read' no vuelve a 'delivered'.
 """
 import secrets
 
-RANGO = {'pending': 0, 'sent': 1, 'failed': 1, 'delivered': 2, 'read': 3}
+# 'blocked': WhatsApp rechazó el mensaje porque restringió el número (error 463)
+RANGO = {'pending': 0, 'sent': 1, 'failed': 1, 'blocked': 1, 'delivered': 2, 'read': 3}
 
 
 def nuevo_id_mensaje() -> str:
@@ -24,8 +25,8 @@ def nuevo_id_mensaje() -> str:
 def puede_cambiar(actual: str, nuevo: str) -> bool:
     if nuevo not in RANGO:
         return False
-    if nuevo == 'failed':
-        # Solo falla lo que aún no llegó al celular
+    if nuevo in ('failed', 'blocked'):
+        # Solo falla / se bloquea lo que aún no llegó al celular
         return actual in ('pending', 'sent')
     return RANGO[nuevo] > RANGO.get(actual, 0)
 

@@ -4,12 +4,13 @@ import axios from '../api/axios'
 import { useAlMostrar } from '../context/PaginaActiva'
 import { formatearTelefono } from '../utils/telefono'
 
-const STATUS_LABEL = { sent: 'Enviado', delivered: 'Entregado', read: 'Leído', failed: 'Fallido', pending: 'Pendiente' }
+const STATUS_LABEL = { sent: 'Enviado', delivered: 'Entregado', read: 'Leído', failed: 'Fallido', blocked: 'Bloqueado por WhatsApp', pending: 'Pendiente' }
 const STATUS_COLOR = {
   sent:      { bg: '#f3f4f6', color: '#6b7280' },
   delivered: { bg: '#dbeafe', color: '#1d4ed8' },
   read:      { bg: '#d1fae5', color: '#065f46' },
   failed:    { bg: '#fee2e2', color: '#991b1b' },
+  blocked:   { bg: '#fdeadf', color: '#9a3412' },
   pending:   { bg: '#fef3c7', color: '#92400e' },
 }
 

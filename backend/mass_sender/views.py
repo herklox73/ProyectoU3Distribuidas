@@ -238,6 +238,10 @@ def api_webhook(request):
             return JsonResponse({"success": False, "error": str(e)})
     return JsonResponse({"success": False})
 
+MOTIVO_BLOQUEO = ('WhatsApp restringió este número (error 463): por un tiempo no permite '
+                  'escribir a contactos nuevos desde el sistema.')
+
+
 @csrf_exempt
 def api_message_ack(request):
     """
@@ -273,6 +277,9 @@ def api_message_ack(request):
             msg = next((m for m in candidatos if puede_cambiar(m.delivery_status, status)), None)
 
         updated = 1 if msg and aplicar_estado(msg, status, wpp_id) else 0
+        if updated and status == 'blocked':
+            msg.error_log = MOTIVO_BLOQUEO
+            msg.save(update_fields=['error_log'])
         return JsonResponse({"success": True, "updated": updated})
 
     except Exception as e:
@@ -348,6 +355,25 @@ def api_ws_ticket(request):
     return JsonResponse({'authenticated': True, 'ticket': make_ws_ticket(user)})
 
 
+def _restriccion_whatsapp(user):
+    """
+    Si en las últimas 24 h WhatsApp bloqueó mensajes de este usuario (error
+    463) y después no se entregó ninguno, el número sigue restringido.
+    """
+    desde = timezone.now() - timedelta(hours=24)
+    ultimo = Message.objects.filter(owner=user, direction='outbound', delivery_status='blocked',
+                                    sent_at__gte=desde).order_by('-sent_at').first()
+    if not ultimo:
+        return None
+    entregado_despues = Message.objects.filter(
+        owner=user, direction='outbound', delivery_status__in=['delivered', 'read'], sent_at__gt=ultimo.sent_at
+    ).exists()
+    if entregado_despues:
+        return None
+    total = Message.objects.filter(owner=user, delivery_status='blocked', sent_at__gte=desde).count()
+    return {'ultimo': timezone.localtime(ultimo.sent_at).strftime('%d/%m/%Y %H:%M'), 'bloqueados_24h': total}
+
+
 def api_qr_status(request):
     """Proxy: devuelve el QR y/o código de vinculación desde Node.js."""
     user = _get_user(request)
@@ -356,6 +382,7 @@ def api_qr_status(request):
     try:
         resp = requests.get(_whatsapp_url('/api/qr'), params={'user_id': user.pk}, headers=internal_headers(), timeout=10)
         data = resp.json()
+        data['restriccion'] = _restriccion_whatsapp(user)
         return JsonResponse(data)
     except Exception:
         return JsonResponse({"ready": False, "has_qr": False, "qr": None, "has_pairing": False, "pairing_code": None})

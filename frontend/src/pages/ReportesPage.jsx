@@ -11,6 +11,7 @@ const ESTADO_LABEL = {
   delivered: 'Entregado',
   read: 'Leído',
   failed: 'Fallido',
+  blocked: 'Bloqueado',
   pending: 'Pendiente',
 }
 
@@ -21,6 +22,7 @@ const ESTADO_COLOR = {
   delivered: { bg: '#cde2fb', color: '#184f95' },
   read:      { bg: '#104281', color: '#ffffff' },
   failed:    { bg: '#fde7e7', color: '#b42318' },
+  blocked:   { bg: '#fdeadf', color: '#9a3412' },
 }
 
 const card = { background: '#fff', borderRadius: 12, padding: '20px 22px', boxShadow: '0 1px 3px #0001' }
@@ -276,7 +278,8 @@ export default function ReportesPage() {
             <Indicador valor={resumen.entregados} label="Entregados" pct={resumen.tasa_entrega} color="#2a78d6" detalle="Incluye los leídos" />
             <Indicador valor={resumen.leidos} label="Leídos" pct={resumen.tasa_lectura} color="#104281"
               detalle={totalEnv ? `${resumen.tasa_lectura_entregados}% de los entregados` : null} />
-            <Indicador valor={resumen.fallidos} label="Fallidos" pct={resumen.tasa_fallo} color="#d03b3b" />
+            <Indicador valor={resumen.fallidos} label="Fallidos" pct={resumen.tasa_fallo} color="#d03b3b"
+              detalle={resumen.bloqueados ? `${resumen.bloqueados} bloqueados por WhatsApp` : null} />
           </div>
 
           {/* Estado + embudo */}
@@ -293,7 +296,7 @@ export default function ReportesPage() {
             <ActividadDiaria porDia={porDia} />
             {totalEnv > 0 && (
               <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 12 }}>
-                {[['read', 'Leído', '#104281'], ['delivered', 'Entregado', '#2a78d6'], ['sent', 'Enviado', '#86b6ef'], ['pending', 'Pendiente', '#a3a29b'], ['failed', 'Fallido', '#d03b3b']].map(([k, l, c]) => (
+                {[['read', 'Leído', '#104281'], ['delivered', 'Entregado', '#2a78d6'], ['sent', 'Enviado', '#86b6ef'], ['pending', 'Pendiente', '#a3a29b'], ['failed', 'Fallido', '#d03b3b'], ['blocked', 'Bloqueado', '#ec835a']].map(([k, l, c]) => (
                   <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.75rem', color: '#52514e' }}>
                     <span style={{ width: 9, height: 9, borderRadius: 2, background: c }} />{l}
                   </span>

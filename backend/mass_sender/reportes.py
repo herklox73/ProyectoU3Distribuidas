@@ -23,6 +23,7 @@ ESTADOS = [
     ('delivered', 'Entregado'),
     ('read', 'Leído'),
     ('failed', 'Fallido'),
+    ('blocked', 'Bloqueado'),
 ]
 ETIQUETA = dict(ESTADOS)
 
@@ -34,6 +35,7 @@ COLOR = {
     'delivered': '#2a78d6',
     'read': '#104281',
     'failed': '#d03b3b',
+    'blocked': '#ec835a',
 }
 
 MAX_FILAS_EXCEL = 20000   # detalle de mensajes en el Excel
@@ -89,7 +91,8 @@ def datos_reporte(user, desde, hasta, status_fil=''):
     # Un mensaje leído también fue entregado
     entregados = conteo['delivered'] + conteo['read']
     leidos = conteo['read']
-    fallidos = conteo['failed']
+    # "Fallidos" incluye los bloqueados por WhatsApp (tampoco llegaron)
+    fallidos = conteo['failed'] + conteo['blocked']
 
     resumen = {
         'enviados': enviados,
@@ -97,6 +100,7 @@ def datos_reporte(user, desde, hasta, status_fil=''):
         'entregados': entregados,
         'leidos': leidos,
         'fallidos': fallidos,
+        'bloqueados': conteo['blocked'],
         'pendientes': conteo['pending'],
         'enviados_puro': conteo['sent'],
         'tasa_entrega': _pct(entregados, enviados),
@@ -163,7 +167,7 @@ def datos_reporte(user, desde, hasta, status_fil=''):
         enviados=Count('id'),
         entregados=Count('id', filter=Q(delivery_status__in=['delivered', 'read'])),
         leidos=Count('id', filter=Q(delivery_status='read')),
-        fallidos=Count('id', filter=Q(delivery_status='failed')),
+        fallidos=Count('id', filter=Q(delivery_status__in=['failed', 'blocked'])),
     ).order_by('-enviados'):
         env = row['enviados']
         por_campana.append({
@@ -184,7 +188,7 @@ def datos_reporte(user, desde, hasta, status_fil=''):
             recibidos=Count('id', filter=Q(direction='inbound')),
             entregados=Count('id', filter=Q(direction='outbound', delivery_status__in=['delivered', 'read'])),
             leidos=Count('id', filter=Q(direction='outbound', delivery_status='read')),
-            fallidos=Count('id', filter=Q(direction='outbound', delivery_status='failed')),
+            fallidos=Count('id', filter=Q(direction='outbound', delivery_status__in=['failed', 'blocked'])),
         ).order_by('-enviados'):
             env = row['enviados']
             por_usuario.append({

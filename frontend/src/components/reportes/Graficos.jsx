@@ -10,6 +10,7 @@ export const ESTADOS = [
   { key: 'delivered', label: 'Entregado', color: '#2a78d6' },
   { key: 'read',      label: 'Leído',     color: '#104281' },
   { key: 'failed',    label: 'Fallido',   color: '#d03b3b' },
+  { key: 'blocked',   label: 'Bloqueado', color: '#ec835a' },
 ]
 
 const TINTA = '#0b0b0b'

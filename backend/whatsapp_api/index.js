@@ -333,7 +333,18 @@ async function startSession(uid) {
                 // log; "Fallido" queda para cuando el envío realmente no sale.
                 if (statusNum === 0) {
                     const codigo = (update.update?.messageStubParameters || []).join(',') || '?';
-                    console.warn(`[WA ${uid}] WhatsApp avisó error ${codigo} en el mensaje ${update.key.id} (puede reintentarse y llegar igual)`);
+                    if (codigo.includes('463')) {
+                        // 463 = "reach-out timelock": WhatsApp restringió el número y no
+                        // deja iniciar chats nuevos por un tiempo. Se marca como Bloqueado.
+                        console.warn(`[WA ${uid}] WhatsApp BLOQUEÓ el mensaje ${update.key.id} (error 463: número restringido)`);
+                        const number = numeroDesdeJid(jid) || sentIds.get(update.key.id) || '';
+                        await notifyDjango('/whatsapp/api/message-ack/', {
+                            user_id: uid, wpp_message_id: update.key.id, number, status: 'blocked'
+                        });
+                        sendToUser(uid, 'message_ack', { wpp_message_id: update.key.id, number, status: 'blocked' });
+                    } else {
+                        console.warn(`[WA ${uid}] WhatsApp avisó error ${codigo} en el mensaje ${update.key.id} (puede reintentarse y llegar igual)`);
+                    }
                     continue;
                 }
                 const statusMap = { 2: 'sent', 3: 'delivered', 4: 'read', 5: 'read' };
