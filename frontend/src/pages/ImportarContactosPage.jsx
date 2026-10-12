@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useMemo } from 'react'
+import { useState, useRef, useCallback, useMemo, useEffect } from 'react'
 import { sileo } from 'sileo'
 import axios from '../api/axios'
 
@@ -94,6 +94,14 @@ export default function ImportarContactosPage() {
   const [dragging, setDragging]     = useState(false)
   const [leyendo, setLeyendo]       = useState(false)
   const [subida, setSubida]         = useState(null)   // % de subida del archivo
+  const [segundos, setSegundos]     = useState(0)      // tiempo leyendo el archivo
+
+  // Contador visible mientras el servidor lee el archivo
+  useEffect(() => {
+    if (!leyendo) { setSegundos(0); return }
+    const t = setInterval(() => setSegundos(s => s + 1), 1000)
+    return () => clearInterval(t)
+  }, [leyendo])
   const [progreso, setProgreso]     = useState(null)   // { hechos, total }
   const inputRef                    = useRef(null)
 
@@ -127,7 +135,13 @@ export default function ImportarContactosPage() {
       setSeleccionados(new Set(rows.map(r => r._i)))
       setModal(true)
     } catch (e) {
-      sileo.error({ title: 'No se pudo leer el archivo', description: e.response?.data?.error || 'Revisa que no esté dañado' })
+      const estado = e.response?.status
+      const detalle = e.response?.data?.error
+        || (estado === 413 ? 'El archivo es demasiado grande para el servidor.'
+        : estado === 502 || estado === 504 ? 'El servidor tardó demasiado en leerlo. Copia solo las columnas de contactos a un Excel nuevo y vuelve a intentarlo.'
+        : !e.response ? 'Se perdió la conexión con el servidor. Revisa tu internet e inténtalo de nuevo.'
+        : 'Revisa que no esté dañado.')
+      sileo.error({ title: 'No se pudo leer el archivo', description: detalle })
       setArchivo(null)
       if (inputRef.current) inputRef.current.value = ''
     } finally {
@@ -275,7 +289,7 @@ export default function ImportarContactosPage() {
             </svg>
             <p style={{ color: '#7c3aed', fontWeight: 600, margin: '0 0 4px' }}>
               {leyendo
-                ? (subida != null && subida < 100 ? `Subiendo ${archivo?.name || 'archivo'}… ${subida}%` : `Leyendo ${archivo?.name || 'archivo'}…`)
+                ? (subida != null && subida < 100 ? `Subiendo ${archivo?.name || 'archivo'}… ${subida}%` : `Leyendo ${archivo?.name || 'archivo'}… ${segundos} s`)
                 : archivo ? archivo.name : 'Arrastra tu archivo aquí o haz clic para seleccionar'}
             </p>
             <p style={{ fontSize: '0.75rem', color: '#aaa', margin: 0 }}>Excel (.xlsx, .xls, .xlsm, .xlsb), .ods o .csv · hasta 1 GB</p>

@@ -30,6 +30,8 @@ MAX_BYTES_EXCEL = 1024 * 1024 * 1024    # 1 GB
 MAX_FILAS = 200_000
 MAX_COLUMNAS = 60
 MAX_CARACTERES = 255   # por celda: ningún campo del contacto guarda más
+MAX_VACIAS = 5000      # filas vacías seguidas tras las que se deja de leer
+MAX_SEGUNDOS = 200     # tiempo máximo de lectura (gunicorn corta a los 300 s)
 
 
 class ArchivoInvalido(Exception):
@@ -70,14 +72,35 @@ def _limpiar(filas):
     return encabezados, filas[1:]
 
 
+def _vacia(fila):
+    return not any(c is not None and str(c).strip() for c in fila)
+
+
 def _limitar(iterable):
+    """
+    Junta las filas con datos. Muchos Excel traen formato (bordes, colores)
+    aplicado a cientos de miles de filas vacías: esas no cuentan, y si
+    aparecen MAX_VACIAS seguidas se deja de leer (ya no hay más datos).
+    """
+    import time
+    inicio = time.monotonic()
     filas = []
-    for fila in iterable:
+    vacias = 0
+    for n, fila in enumerate(iterable):
+        if n % 2000 == 0 and time.monotonic() - inicio > MAX_SEGUNDOS:
+            raise ArchivoInvalido('El archivo tarda demasiado en leerse. Copia solo las columnas de '
+                                  'contactos a un Excel nuevo y vuelve a intentarlo.')
+        if _vacia(fila):
+            vacias += 1
+            if vacias >= MAX_VACIAS and filas:
+                break
+            continue
+        vacias = 0
         # Se recorta cada celda al leer: un archivo enorme por notas largas
         # no llena la memoria
         filas.append([c[:MAX_CARACTERES] if isinstance(c, str) else c for c in fila[:MAX_COLUMNAS]])
         if len(filas) > MAX_FILAS + 1:
-            raise ArchivoInvalido(f'El archivo tiene más de {MAX_FILAS:,} filas. Divídelo en partes.'.replace(',', '.'))
+            raise ArchivoInvalido(f'El archivo tiene más de {MAX_FILAS:,} contactos. Divídelo en partes.'.replace(',', '.'))
     return filas
 
 
@@ -93,7 +116,8 @@ def _leer_xlsx(ruta):
             raise ArchivoInvalido('No se pudo abrir el Excel. ¿Está dañado o protegido con contraseña?')
         try:
             ws = wb.worksheets[0]
-            return _limitar(ws.iter_rows(values_only=True))
+            # max_col: un formato aplicado hasta la columna XFD (16.384) no se recorre
+            return _limitar(ws.iter_rows(max_col=MAX_COLUMNAS, values_only=True))
         finally:
             wb.close()
 
@@ -108,7 +132,7 @@ def _leer_xls(ruta):
 
     def fila(r):
         out = []
-        for c in range(hoja.ncols):
+        for c in range(min(hoja.ncols, MAX_COLUMNAS)):
             celda = hoja.cell(r, c)
             if celda.ctype == xlrd.XL_CELL_DATE:
                 try:
