@@ -300,7 +300,7 @@ function Medidor({ pct, color }) {
   )
 }
 
-export function TablaCampanas({ porCampana }) {
+export function TablaCampanas({ porCampana, titulo = 'Campaña', campo = 'campana' }) {
   if (!porCampana.length) return <Vacio alto={90} />
   const th = { padding: '9px 14px', textAlign: 'left', fontSize: '0.74rem', color: TINTA2, fontWeight: 600, whiteSpace: 'nowrap' }
   const td = { padding: '10px 14px', fontSize: '0.82rem', color: TINTA, fontVariantNumeric: 'tabular-nums' }
@@ -309,7 +309,7 @@ export function TablaCampanas({ porCampana }) {
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr style={{ borderBottom: `1px solid ${RAYA}` }}>
-            <th style={th}>Campaña</th>
+            <th style={th}>{titulo}</th>
             <th style={{ ...th, textAlign: 'right' }}>Enviados</th>
             <th style={{ ...th, textAlign: 'right' }}>Fallidos</th>
             <th style={th}>Entrega</th>
@@ -318,8 +318,8 @@ export function TablaCampanas({ porCampana }) {
         </thead>
         <tbody>
           {porCampana.map(c => (
-            <tr key={c.campana} style={{ borderBottom: `1px solid #f3f2ef` }}>
-              <td style={{ ...td, fontWeight: 600 }}>{c.campana}</td>
+            <tr key={c[campo]} style={{ borderBottom: `1px solid #f3f2ef` }}>
+              <td style={{ ...td, fontWeight: 600 }}>{c[campo]}</td>
               <td style={{ ...td, textAlign: 'right' }}>{fmt(c.enviados)}</td>
               <td style={{ ...td, textAlign: 'right', color: c.fallidos ? '#b42318' : MUTED }}>{fmt(c.fallidos)}</td>
               <td style={td}><Medidor pct={c.tasa_entrega} color="#2a78d6" /></td>

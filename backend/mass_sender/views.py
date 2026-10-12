@@ -562,16 +562,53 @@ def import_contacts(request):
 # ─────────────────────────────────────────────
 # API DE REPORTES (JSON)
 # ─────────────────────────────────────────────
+class _SinPermiso(Exception):
+    pass
+
+
+def _alcance_reporte(request, user):
+    """
+    De quién es el reporte. Un usuario normal solo ve el suyo (se ignora
+    ?usuario=). El administrador puede pedir ?usuario=<id> o ?usuario=todos.
+    Devuelve un User, o None para "todos los usuarios".
+    """
+    pedido = request.GET.get('usuario', '')
+    if not pedido or not user.is_staff:
+        return user
+    if pedido == 'todos':
+        return None
+    from django.contrib.auth import get_user_model
+    try:
+        otro = get_user_model().objects.filter(pk=int(pedido)).first()
+    except ValueError:
+        otro = None
+    if otro is None:
+        raise _SinPermiso('Usuario no encontrado')
+    return otro
+
+
+def _sufijo_alcance(alcance, user):
+    """Parte del nombre del archivo: vacío para el propio reporte, 'todos_' o 'usuario_'."""
+    if alcance is user:
+        return ''
+    quien = 'todos' if alcance is None else alcance.get_username().split('@')[0]
+    return ''.join(ch if ch.isalnum() or ch in '-_' else '_' for ch in quien) + '_'
+
+
 @csrf_exempt
 def api_reportes(request):
     """Estadísticas del periodo para la página de reportes (ver reportes.py)."""
     user = _get_user(request)
     if not user:
         return JsonResponse({'error': 'No autenticado'}, status=401)
+    try:
+        alcance = _alcance_reporte(request, user)
+    except _SinPermiso as e:
+        return JsonResponse({'error': str(e)}, status=404)
     desde, hasta = reportes.rango_fechas(request)
     status_fil = request.GET.get('status', '')
-    datos = reportes.datos_reporte(user, desde, hasta, status_fil)
-    mensajes = reportes.mensajes_detalle(user, desde, hasta, status_fil, limite=100)
+    datos = reportes.datos_reporte(alcance, desde, hasta, status_fil)
+    mensajes = reportes.mensajes_detalle(alcance, desde, hasta, status_fil, limite=100)
     for m in mensajes:
         m.pop('fecha_dt', None)
         m['mensaje'] = m['mensaje'][:120]
@@ -592,20 +629,28 @@ def api_reportes_excel(request):
     user = _get_user(request)
     if not user:
         return JsonResponse({'error': 'No autenticado'}, status=401)
+    try:
+        alcance = _alcance_reporte(request, user)
+    except _SinPermiso as e:
+        return JsonResponse({'error': str(e)}, status=404)
     desde, hasta = reportes.rango_fechas(request)
-    contenido = reportes.excel_reporte(user, desde, hasta, request.GET.get('status', ''))
+    contenido = reportes.excel_reporte(alcance, desde, hasta, request.GET.get('status', ''))
     return _descarga(contenido,
                      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                     f'reporte_masssend_{desde}_{hasta}.xlsx')
+                     f'reporte_masssend_{_sufijo_alcance(alcance, user)}{desde}_{hasta}.xlsx')
 
 
 def api_reportes_pdf(request):
     user = _get_user(request)
     if not user:
         return JsonResponse({'error': 'No autenticado'}, status=401)
+    try:
+        alcance = _alcance_reporte(request, user)
+    except _SinPermiso as e:
+        return JsonResponse({'error': str(e)}, status=404)
     desde, hasta = reportes.rango_fechas(request)
-    contenido = reportes.pdf_reporte(user, desde, hasta, request.GET.get('status', ''))
-    return _descarga(contenido, 'application/pdf', f'reporte_masssend_{desde}_{hasta}.pdf')
+    contenido = reportes.pdf_reporte(alcance, desde, hasta, request.GET.get('status', ''))
+    return _descarga(contenido, 'application/pdf', f'reporte_masssend_{_sufijo_alcance(alcance, user)}{desde}_{hasta}.pdf')
 
 
 # ─────────────────────────────────────────────

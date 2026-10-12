@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import axios from '../api/axios'
+import { useAuth } from '../context/AuthContext'
 import { formatearTelefono } from '../utils/telefono'
 import { IconoExcel, IconoPDF, Girando } from '../components/reportes/IconosArchivo'
 import { ActividadDiaria, DonaEstados, Embudo, PorHora, TablaCampanas } from '../components/reportes/Graficos'
@@ -69,6 +70,11 @@ function mejorHora(porHora) {
 }
 
 export default function ReportesPage() {
+  // El administrador puede ver el reporte de cualquier usuario o de todos
+  const { user } = useAuth()
+  const esAdmin = Boolean(user?.isStaff)
+  const [verUsuario, setVerUsuario] = useState('')     // '' = el mío, 'todos' o id
+  const [usuarios, setUsuarios]     = useState([])
   const [data, setData]         = useState(null)
   const [loading, setLoading]   = useState(true)
   const [desde, setDesde]       = useState('')
@@ -88,12 +94,20 @@ export default function ReportesPage() {
     return fechaLocal(d)
   }
 
-  const cargar = async (d = desde, h = hasta) => {
+  useEffect(() => {
+    if (!esAdmin) return
+    axios.get('/whatsapp/api/usuarios-contactos/')
+      .then(({ data }) => setUsuarios(data.usuarios || []))
+      .catch(() => setUsuarios([]))
+  }, [esAdmin])
+
+  const cargar = async (d = desde, h = hasta, u = verUsuario) => {
     setLoading(true)
     try {
       const params = {}
       if (d) params.desde = d
       if (h) params.hasta = h
+      if (esAdmin && u) params.usuario = u
       const resp = await axios.get('/whatsapp/api/reportes/', { params })
       setData(resp.data)
     } catch (e) {
@@ -112,12 +126,14 @@ export default function ReportesPage() {
       const params = {}
       if (desde) params.desde = desde
       if (hasta) params.hasta = hasta
+      if (esAdmin && verUsuario) params.usuario = verUsuario
       const resp = await axios.get(`/whatsapp/api/reportes/${tipo}/`, { params, responseType: 'blob' })
       const ext = tipo === 'excel' ? 'xlsx' : 'pdf'
       const url = URL.createObjectURL(resp.data)
       const a = document.createElement('a')
       a.href = url
-      a.download = `reporte_masssend_${desde || 'inicio'}_${hasta || 'hoy'}.${ext}`
+      a.download = /filename="([^"]+)"/.exec(resp.headers['content-disposition'] || '')?.[1]
+        || `reporte_masssend_${desde || 'inicio'}_${hasta || 'hoy'}.${ext}`
       document.body.appendChild(a)
       a.click()
       a.remove()
@@ -162,7 +178,9 @@ export default function ReportesPage() {
         <div>
           <h1 style={{ fontSize: '1.35rem', fontWeight: 700, color: '#111', margin: 0 }}>Reportes de Mensajería</h1>
           <div style={{ fontSize: '0.8rem', color: '#8a8983', marginTop: 4 }}>
-            Estados de entrega, lectura y rendimiento de tus envíos
+            {esAdmin && verUsuario
+              ? <>Viendo: <b style={{ color: '#0b0b0b' }}>{data?.alcance || '…'}</b></>
+              : 'Estados de entrega, lectura y rendimiento de tus envíos'}
           </div>
         </div>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
@@ -199,6 +217,19 @@ export default function ReportesPage() {
 
       {/* Filtros */}
       <div style={{ display: 'flex', gap: 12, marginBottom: 24, alignItems: 'center', flexWrap: 'wrap' }}>
+        {esAdmin && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }} title="Solo administradores">
+            <label style={{ fontSize: '0.82rem', color: '#555', fontWeight: 500 }}>Usuario</label>
+            <select value={verUsuario} onChange={e => { setVerUsuario(e.target.value); cargar(desde, hasta, e.target.value) }}
+              style={{ padding: '6px 10px', borderRadius: 7, border: '1px solid #ddd', fontSize: '0.82rem', outline: 'none', maxWidth: 260, background: '#fff' }}>
+              <option value="">Mis reportes</option>
+              <option value="todos">Todos los usuarios</option>
+              {usuarios.filter(u => u.usuario !== user?.username).map(u => (
+                <option key={u.id} value={u.id}>{u.usuario}{u.admin ? ' (admin)' : ''}</option>
+              ))}
+            </select>
+          </div>
+        )}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <label style={{ fontSize: '0.82rem', color: '#555', fontWeight: 500 }}>Desde</label>
           <input
@@ -273,6 +304,11 @@ export default function ReportesPage() {
             sub={hora ? `Mejor hora para escribir: ${String(hora.hora).padStart(2, '0')}:00, con ${hora.tasa_lectura}% de lectura` : 'Pasa el cursor por una barra para ver su tasa de lectura'}>
             <PorHora porHora={porHora} />
           </Tarjeta>
+          {data?.por_usuario?.length > 0 && (
+            <Tarjeta style={{ marginBottom: 18 }} titulo="Rendimiento por usuario" sub="Cómo le va a cada usuario con sus envíos en este periodo">
+              <TablaCampanas porCampana={data.por_usuario} titulo="Usuario" campo="usuario" />
+            </Tarjeta>
+          )}
           <Tarjeta style={{ marginBottom: 18 }} titulo="Rendimiento por campaña" sub="Porcentaje de entrega y lectura sobre lo enviado">
             <TablaCampanas porCampana={porCampana} />
           </Tarjeta>
@@ -296,7 +332,7 @@ export default function ReportesPage() {
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                 <thead>
                   <tr style={{ background: '#f9fafb' }}>
-                    {['Contacto', 'Teléfono', 'Campaña', 'Mensaje', 'Estado', 'Fecha'].map(h => (
+                    {['Contacto', 'Teléfono', 'Campaña', 'Mensaje', 'Estado', 'Fecha', ...(verUsuario === 'todos' ? ['Usuario'] : [])].map(h => (
                       <th key={h} style={{ padding: '10px 16px', textAlign: 'left', fontSize: '0.75rem', color: '#6b7280', fontWeight: 600 }}>{h}</th>
                     ))}
                   </tr>
@@ -304,7 +340,7 @@ export default function ReportesPage() {
                 <tbody>
                   {filtrados.length === 0 && (
                     <tr>
-                      <td colSpan={6} style={{ textAlign: 'center', padding: 28, color: '#ccc', fontSize: '0.85rem' }}>
+                      <td colSpan={verUsuario === 'todos' ? 7 : 6} style={{ textAlign: 'center', padding: 28, color: '#ccc', fontSize: '0.85rem' }}>
                         Sin resultados
                       </td>
                     </tr>
@@ -328,6 +364,9 @@ export default function ReportesPage() {
                           </span>
                         </td>
                         <td style={{ padding: '10px 16px', fontSize: '0.78rem', color: '#aaa', whiteSpace: 'nowrap' }}>{m.fecha}</td>
+                        {verUsuario === 'todos' && (
+                          <td style={{ padding: '10px 16px', fontSize: '0.78rem', color: '#52514e', whiteSpace: 'nowrap' }}>{m.usuario}</td>
+                        )}
                       </tr>
                     )
                   })}

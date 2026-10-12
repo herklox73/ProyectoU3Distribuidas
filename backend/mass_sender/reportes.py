@@ -60,8 +60,16 @@ def _pct(parte, total):
     return round(parte * 100 / total, 1) if total else 0.0
 
 
+def nombre_alcance(user):
+    """Texto de a quién corresponde el reporte (user=None significa todos los usuarios)."""
+    return 'Todos los usuarios' if user is None else user.get_username()
+
+
 def _consulta(user, desde, hasta, status_fil=''):
-    qs = Message.objects.filter(owner=user, sent_at__date__gte=desde, sent_at__date__lte=hasta)
+    """user=None: mensajes de todos los usuarios (solo lo pide un administrador)."""
+    qs = Message.objects.filter(sent_at__date__gte=desde, sent_at__date__lte=hasta)
+    if user is not None:
+        qs = qs.filter(owner=user)
     if status_fil:
         qs = qs.filter(delivery_status=status_fil)
     return qs
@@ -168,9 +176,33 @@ def datos_reporte(user, desde, hasta, status_fil=''):
             'tasa_lectura': _pct(row['leidos'], env),
         })
 
+    # Vista de administrador con todos los usuarios: rendimiento de cada uno
+    por_usuario = []
+    if user is None:
+        for row in qs.values('owner__username').annotate(
+            enviados=Count('id', filter=Q(direction='outbound')),
+            recibidos=Count('id', filter=Q(direction='inbound')),
+            entregados=Count('id', filter=Q(direction='outbound', delivery_status__in=['delivered', 'read'])),
+            leidos=Count('id', filter=Q(direction='outbound', delivery_status='read')),
+            fallidos=Count('id', filter=Q(direction='outbound', delivery_status='failed')),
+        ).order_by('-enviados'):
+            env = row['enviados']
+            por_usuario.append({
+                'usuario': row['owner__username'] or '(sin dueño)',
+                'enviados': env,
+                'recibidos': row['recibidos'],
+                'entregados': row['entregados'],
+                'leidos': row['leidos'],
+                'fallidos': row['fallidos'],
+                'tasa_entrega': _pct(row['entregados'], env),
+                'tasa_lectura': _pct(row['leidos'], env),
+            })
+
     return {
         'desde': desde.isoformat(),
         'hasta': hasta.isoformat(),
+        'alcance': nombre_alcance(user),
+        'por_usuario': por_usuario,
         'resumen': resumen,
         'por_estado': por_estado,
         'por_dia': por_dia,
@@ -182,19 +214,26 @@ def datos_reporte(user, desde, hasta, status_fil=''):
 def mensajes_detalle(user, desde, hasta, status_fil='', limite=100):
     """Mensajes salientes más recientes con el nombre del contacto (una sola consulta de contactos)."""
     qs = _consulta(user, desde, hasta, status_fil).filter(direction='outbound') \
-        .select_related('campaign').order_by('-sent_at')[:limite]
+        .select_related('campaign', 'owner').order_by('-sent_at')[:limite]
     msgs = list(qs)
-    telefonos = {m.phone_number for m in msgs}
-    nombres = dict(
-        Contact.objects.filter(owner=user, phone_number__in=telefonos).values_list('phone_number', 'full_name')
-    )
+    # Nombres de contacto por (dueño, teléfono), en lotes para no pasar el
+    # límite de parámetros de SQLite con muchos mensajes
+    nombres = {}
+    telefonos = sorted({m.phone_number for m in msgs})
+    duenos = {m.owner_id for m in msgs}
+    for i in range(0, len(telefonos), 900):
+        filtro = Contact.objects.filter(phone_number__in=telefonos[i:i + 900])
+        filtro = filtro.filter(owner=user) if user is not None else filtro.filter(owner_id__in=duenos)
+        for owner_id, tel, nombre in filtro.values_list('owner_id', 'phone_number', 'full_name'):
+            nombres[(owner_id, tel)] = nombre
     filas = []
     for m in msgs:
         local = timezone.localtime(m.sent_at) if m.sent_at else None
         filas.append({
             'id': m.id,
             'telefono': m.phone_number,
-            'nombre': nombres.get(m.phone_number) or m.phone_number,
+            'nombre': nombres.get((m.owner_id, m.phone_number)) or m.phone_number,
+            'usuario': m.owner.get_username() if m.owner else '',
             'campana': m.campaign.name if m.campaign else '',
             'mensaje': m.content or '',
             'status': m.delivery_status or 'sent',
@@ -253,7 +292,7 @@ def excel_reporte(user, desde, hasta, status_fil=''):
     ws['A1'] = 'Reporte de mensajería - MassSend'
     ws['A1'].font = titulo
     ws['A2'] = f"Periodo: {_fecha_es(datos['desde'])} al {_fecha_es(datos['hasta'])}"
-    ws['A3'] = f"Generado: {timezone.localtime().strftime('%d/%m/%Y %H:%M')} · Usuario: {user.get_username()}"
+    ws['A3'] = f"Generado: {timezone.localtime().strftime('%d/%m/%Y %H:%M')} · Usuario: {nombre_alcance(user)}"
     ws['A2'].font = gris
     ws['A3'].font = gris
 
@@ -404,9 +443,23 @@ def excel_reporte(user, desde, hasta, status_fil=''):
     ws.freeze_panes = 'A2'
     anchos(ws, [32, 11, 12, 9, 10, 15, 15])
 
+    # ── Hoja extra (todos los usuarios): rendimiento por usuario ─────
+    if datos['por_usuario']:
+        ws = wb.create_sheet('Usuarios')
+        encabezado(ws, 1, ['Usuario', 'Enviados', 'Entregados', 'Leídos', 'Fallidos', 'Recibidos',
+                           'Tasa de entrega', 'Tasa de lectura'])
+        for i, u in enumerate(datos['por_usuario'], start=2):
+            for j, k in enumerate(['usuario', 'enviados', 'entregados', 'leidos', 'fallidos', 'recibidos'], start=1):
+                ws.cell(row=i, column=j, value=u[k])
+            ws.cell(row=i, column=7, value=u['tasa_entrega'] / 100).number_format = '0.0%'
+            ws.cell(row=i, column=8, value=u['tasa_lectura'] / 100).number_format = '0.0%'
+        ws.freeze_panes = 'A2'
+        anchos(ws, [30, 11, 12, 9, 10, 11, 15, 15])
+
     # ── Hoja 5: Mensajes (detalle) ───────────────────────────────────
     ws = wb.create_sheet('Mensajes')
-    encabezado(ws, 1, ['Fecha', 'Contacto', 'Teléfono', 'Campaña', 'Estado', 'Mensaje'])
+    todos = user is None
+    encabezado(ws, 1, ['Fecha', 'Contacto', 'Teléfono', 'Campaña', 'Estado', 'Mensaje'] + (['Usuario'] if todos else []))
     filas = mensajes_detalle(user, desde, hasta, status_fil, limite=MAX_FILAS_EXCEL)
     for i, m in enumerate(filas, start=2):
         ws.cell(row=i, column=1, value=m['fecha_dt']).number_format = 'DD/MM/YYYY HH:MM'
@@ -415,13 +468,15 @@ def excel_reporte(user, desde, hasta, status_fil=''):
         ws.cell(row=i, column=4, value=m['campana'] or 'Mensaje directo')
         ws.cell(row=i, column=5, value=ETIQUETA.get(m['status'], m['status']))
         ws.cell(row=i, column=6, value=m['mensaje'][:500])
+        if todos:
+            ws.cell(row=i, column=7, value=m['usuario'])
     ws.freeze_panes = 'A2'
     if filas:
-        ws.auto_filter.ref = f'A1:F{len(filas) + 1}'
+        ws.auto_filter.ref = f"A1:{'G' if todos else 'F'}{len(filas) + 1}"
     if len(filas) >= MAX_FILAS_EXCEL:
         ws.cell(row=len(filas) + 3, column=1,
                 value=f'Se muestran los {MAX_FILAS_EXCEL} mensajes más recientes del periodo.').font = gris
-    anchos(ws, [17, 24, 18, 24, 12, 70])
+    anchos(ws, [17, 24, 18, 24, 12, 70, 26])
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -465,7 +520,7 @@ def pdf_reporte(user, desde, hasta, status_fil=''):
         Paragraph('Reporte de mensajería', h1),
         Paragraph(f"Periodo {_fecha_es(datos['desde'])} al {_fecha_es(datos['hasta'])} · "
                   f"Generado el {timezone.localtime().strftime('%d/%m/%Y %H:%M')} · "
-                  f"{user.get_username()}", sub),
+                  f"{nombre_alcance(user)}", sub),
         Spacer(1, 12),
     ]
 
@@ -619,6 +674,17 @@ def pdf_reporte(user, desde, hasta, status_fil=''):
                f"({mejor['tasa_lectura']}% de {mejor['enviados']} enviados)") if mejor['enviados'] else ''
         story += [KeepTogether([Paragraph('Envíos por hora del día', h2), g, Paragraph(pie, nota)])]
 
+    # ── Usuarios (solo en la vista de todos) ────────────────────────
+    if datos['por_usuario']:
+        filas = [['Usuario', 'Enviados', 'Entregados', 'Leídos', 'Fallidos', '% entrega', '% lectura']]
+        for u in datos['por_usuario']:
+            filas.append([Paragraph(u['usuario'].replace('&', '&amp;').replace('<', '&lt;'), celda),
+                          u['enviados'], u['entregados'], u['leidos'], u['fallidos'],
+                          f"{u['tasa_entrega']}%", f"{u['tasa_lectura']}%"])
+        t = Table(filas, colWidths=[ancho * 0.34] + [ancho * 0.11] * 6, repeatRows=1)
+        t.setStyle(_estilo_tabla(colors, TINTA, TINTA2, RAYA, FONDO, numericas_desde=1))
+        story += [Paragraph('Rendimiento por usuario', h2), t]
+
     # ── Campañas ────────────────────────────────────────────────────
     camp = datos['por_campana']
     if camp:
@@ -637,7 +703,10 @@ def pdf_reporte(user, desde, hasta, status_fil=''):
         for m in msgs:
             texto = m['mensaje'].replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
             filas.append([
-                m['fecha'], Paragraph(m['nombre'].replace('&', '&amp;').replace('<', '&lt;'), celda),
+                m['fecha'],
+                Paragraph(m['nombre'].replace('&', '&amp;').replace('<', '&lt;')
+                          + (f"<br/><font color='#8a8983' size='6.5'>{m['usuario'].replace('&', '&amp;').replace('<', '&lt;')}</font>"
+                             if user is None else ''), celda),
                 _telefono_legible(m['telefono']),
                 Paragraph((m['campana'] or 'Directo').replace('&', '&amp;').replace('<', '&lt;'), celda),
                 ETIQUETA.get(m['status'], m['status']),
