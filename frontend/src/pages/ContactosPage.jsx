@@ -3,6 +3,8 @@ import { sileo } from 'sileo'
 import axios from '../api/axios'
 import FlagEC from '../components/FlagEC'
 import { formatearTelefono } from '../utils/telefono'
+import { useAuth } from '../context/AuthContext'
+import { IconoExcel, Girando } from '../components/reportes/IconosArchivo'
 
 // ── Número del formulario (parte local, sin +593) ──────────────────────────
 // Acepta 0987654321, 987654321 o incluso 593987654321 y devuelve siempre los
@@ -82,7 +84,61 @@ const CSV_CAMPOS = [
   { value: 'notas', label: 'Notas' },
 ]
 
+// ── Solo administradores: descargar contactos en Excel ───────────────────
+// El archivo se arma en el servidor en ese momento y no se guarda.
+function ExportarContactosAdmin() {
+  const [usuarios, setUsuarios] = useState([])
+  const [elegido, setElegido]   = useState('todos')
+  const [bajando, setBajando]   = useState(false)
+
+  useEffect(() => {
+    axios.get('/whatsapp/api/usuarios-contactos/')
+      .then(({ data }) => setUsuarios(data.usuarios || []))
+      .catch(() => setUsuarios([]))
+  }, [])
+
+  const total = usuarios.reduce((a, u) => a + u.contactos, 0)
+
+  const descargar = async () => {
+    setBajando(true)
+    try {
+      const resp = await axios.get('/whatsapp/api/contactos/exportar/', {
+        params: { usuario: elegido }, responseType: 'blob', timeout: 0,
+      })
+      const nombre = /filename="([^"]+)"/.exec(resp.headers['content-disposition'] || '')?.[1] || 'contactos.xlsx'
+      const url = URL.createObjectURL(resp.data)
+      const a = Object.assign(document.createElement('a'), { href: url, download: nombre })
+      document.body.appendChild(a); a.click(); a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch (e) {
+      sileo.error({ title: 'No se pudo descargar', description: e.response?.status === 403 ? 'Solo el administrador puede descargar contactos.' : 'Intenta de nuevo.' })
+    } finally {
+      setBajando(false)
+    }
+  }
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 4px 4px 10px', border: '1px solid #e4e3df', borderRadius: 10, background: '#fff' }}
+      title="Solo administradores">
+      <select value={elegido} onChange={e => setElegido(e.target.value)} disabled={bajando}
+        style={{ border: 'none', outline: 'none', fontSize: '0.82rem', background: 'transparent', maxWidth: 230, cursor: 'pointer' }}>
+        <option value="todos">Todos los usuarios ({total.toLocaleString('es-EC')})</option>
+        {usuarios.map(u => (
+          <option key={u.id} value={u.id}>{u.usuario}{u.admin ? ' (admin)' : ''} ({u.contactos.toLocaleString('es-EC')})</option>
+        ))}
+      </select>
+      <button onClick={descargar} disabled={bajando} aria-label="Descargar contactos en Excel"
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 12px 4px 6px', border: '1px solid #e4e3df', borderRadius: 8, background: '#fff', cursor: bajando ? 'wait' : 'pointer', fontWeight: 600, fontSize: '0.84rem', color: '#0b0b0b' }}>
+        {bajando ? <Girando color="#1d7f45" /> : <IconoExcel />}
+        Excel
+      </button>
+    </div>
+  )
+}
+
 export default function ContactosPage({ onNavegar } = {}) {
+  const { user } = useAuth()
+  const esAdmin = Boolean(user?.isStaff)   // solo el admin ve la descarga en Excel
   const [contactos, setContactos]   = useState([])
   const [total, setTotal]           = useState(0)
   const [page, setPage]             = useState(1)
@@ -294,7 +350,8 @@ export default function ContactosPage({ onNavegar } = {}) {
         <h1 style={{ fontSize: '1.35rem', fontWeight: 700, margin: 0 }}>
           Contactos <span style={{ fontSize: '0.85rem', color: '#aaa', fontWeight: 400 }}>({total})</span>
         </h1>
-        <div style={{ display: 'flex', gap: 10 }}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          {esAdmin && <ExportarContactosAdmin />}
           <button onClick={() => {
             // Lleva a "Importar contactos" (Excel hasta 1 GB, .ods y .csv)
             if (onNavegar) { onNavegar('importar'); return }

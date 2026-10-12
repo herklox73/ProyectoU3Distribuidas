@@ -1183,6 +1183,42 @@ def api_contactos_importar(request):
         return JsonResponse({'success': False, 'error': str(e)}, status=500)
 
 
+def api_usuarios_contactos(request):
+    """Solo administradores: usuarios y cuántos contactos tiene cada uno."""
+    from .exportar_contactos import usuarios_con_contactos
+    user = _get_user(request)
+    if not user:
+        return JsonResponse({'error': 'No autenticado'}, status=401)
+    if not user.is_staff:
+        return JsonResponse({'error': 'Solo el administrador puede ver esto.'}, status=403)
+    return JsonResponse({'usuarios': usuarios_con_contactos()})
+
+
+def api_contactos_exportar(request):
+    """
+    Solo administradores: descarga en Excel los contactos de un usuario
+    (?usuario=<id>) o de todos (?usuario=todos). Se genera en el momento y
+    no se guarda en el servidor.
+    """
+    from .exportar_contactos import excel_contactos
+    user = _get_user(request)
+    if not user:
+        return JsonResponse({'error': 'No autenticado'}, status=401)
+    if not user.is_staff:
+        return JsonResponse({'error': 'Solo el administrador puede descargar contactos.'}, status=403)
+    usuario = request.GET.get('usuario', '')
+    if usuario == 'todos':
+        usuario_id = None
+    else:
+        try:
+            usuario_id = int(usuario) if usuario else user.pk
+        except ValueError:
+            return JsonResponse({'error': 'Usuario inválido'}, status=400)
+    contenido, nombre = excel_contactos(usuario_id, request.GET.get('etiqueta', '').strip())
+    return _descarga(contenido,
+                     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', nombre)
+
+
 @csrf_exempt
 def api_contactos_leer_archivo(request):
     """
