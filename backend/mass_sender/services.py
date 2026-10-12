@@ -208,7 +208,7 @@ class ContactService:
         existen para este usuario y se crean/actualizan en bloque
         (bulk_create / bulk_update). Así 1.000 contactos tardan menos de un
         segundo en vez de hacer una consulta por fila. El frontend envía los
-        archivos grandes en partes de 1.000.
+        archivos grandes en partes de 2.000.
 
         Si el mismo teléfono aparece varias veces en el lote, gana la última fila.
         """
@@ -242,18 +242,29 @@ class ContactService:
                     c.phone_number: c
                     for c in Contact.objects.filter(owner=owner, phone_number__in=list(por_telefono))
                 }
-                nuevos, cambiados = [], []
+                nuevos, cambios = [], []
+                actualizados = 0
                 for tel, (nombre, tags) in por_telefono.items():
                     c = existentes.get(tel)
                     if c is None:
                         nuevos.append(Contact(owner=owner, phone_number=tel, full_name=nombre or tel, tags=tags))
-                    else:
-                        c.full_name = nombre or c.full_name or tel
-                        c.tags = tags
-                        cambiados.append(c)
+                        continue
+                    actualizados += 1
+                    nuevo_nombre = nombre or c.full_name or tel
+                    # Solo se escribe lo que cambió (reimportar el mismo archivo es casi instantáneo)
+                    if nuevo_nombre != c.full_name or tags != (c.tags or ''):
+                        cambios.append((nuevo_nombre, tags, c.pk))
                 Contact.objects.bulk_create(nuevos, batch_size=500)
-                Contact.objects.bulk_update(cambiados, ['full_name', 'tags'], batch_size=500)
-                creados, actualizados = len(nuevos), len(cambiados)
+                if cambios:
+                    # UPDATE simple con executemany: mucho más rápido que
+                    # bulk_update (que arma un CASE gigante por lote)
+                    from django.db import connection
+                    with connection.cursor() as cur:
+                        cur.executemany(
+                            f'UPDATE {Contact._meta.db_table} SET full_name = %s, tags = %s WHERE id = %s',
+                            cambios,
+                        )
+                creados = len(nuevos)
         except IntegrityError:
             # Otra importación creó alguno de estos números al mismo tiempo:
             # se repite fila por fila, que tolera esa carrera.

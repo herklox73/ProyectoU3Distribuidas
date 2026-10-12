@@ -1,7 +1,9 @@
 """
 Lectura de archivos de contactos para la importación.
 
-Formatos aceptados:
+Las hojas de cálculo se leen con python-calamine (lector en Rust: 300.000
+filas en ~2 s y poca memoria). Si un archivo raro no le sirve, se usa el
+lector clásico de cada formato:
   - Excel moderno: .xlsx .xlsm .xltx .xltm  (openpyxl)
   - Excel 97-2003: .xls                       (xlrd)
   - Excel binario: .xlsb                      (pyxlsb)
@@ -27,7 +29,7 @@ EXT_HOJAS = EXT_EXCEL | {'.xls', '.xlsb', '.ods'}      # Excel y similares
 EXTENSIONES = EXT_HOJAS | EXT_TEXTO
 
 MAX_BYTES_EXCEL = 1024 * 1024 * 1024    # 1 GB
-MAX_FILAS = 200_000
+MAX_FILAS = 500_000
 MAX_COLUMNAS = 60
 MAX_CARACTERES = 255   # por celda: ningún campo del contacto guarda más
 MAX_VACIAS = 5000      # filas vacías seguidas tras las que se deja de leer
@@ -59,17 +61,20 @@ def _texto(valor):
 
 
 def _limpiar(filas):
-    """Quita filas vacías, recorta columnas vacías al final y separa el encabezado."""
-    filas = [[_texto(c)[:MAX_CARACTERES] for c in f[:MAX_COLUMNAS]] for f in filas]
-    filas = [f for f in filas if any(c for c in f)]
+    """Recorta columnas vacías al final y separa el encabezado (las filas ya
+    vienen en texto y sin filas vacías desde _limitar). Trabaja sobre la
+    misma lista para no duplicar la memoria."""
     if not filas:
         raise ArchivoInvalido('El archivo no tiene datos.')
     ancho = max(len(f) for f in filas)
     while ancho > 1 and not any(len(f) >= ancho and f[ancho - 1] for f in filas):
         ancho -= 1
-    filas = [(f + [''] * ancho)[:ancho] for f in filas]
+    for i, f in enumerate(filas):
+        if len(f) != ancho:
+            filas[i] = (f + [''] * ancho)[:ancho]
     encabezados = [h or f'Columna {i + 1}' for i, h in enumerate(filas[0])]
-    return encabezados, filas[1:]
+    del filas[0]
+    return encabezados, filas
 
 
 def _vacia(fila):
@@ -96,15 +101,23 @@ def _limitar(iterable):
                 break
             continue
         vacias = 0
-        # Se recorta cada celda al leer: un archivo enorme por notas largas
-        # no llena la memoria
-        filas.append([c[:MAX_CARACTERES] if isinstance(c, str) else c for c in fila[:MAX_COLUMNAS]])
+        # Se pasa a texto y se recorta cada celda al leer: un archivo enorme
+        # por notas largas no llena la memoria
+        filas.append([_texto(c)[:MAX_CARACTERES] for c in fila[:MAX_COLUMNAS]])
         if len(filas) > MAX_FILAS + 1:
             raise ArchivoInvalido(f'El archivo tiene más de {MAX_FILAS:,} contactos. Divídelo en partes.'.replace(',', '.'))
     return filas
 
 
 # ── Lectores por formato ────────────────────────────────────────────────
+def _leer_calamine(ruta):
+    from python_calamine import CalamineWorkbook
+    with open(ruta, 'rb') as fh:
+        wb = CalamineWorkbook.from_filelike(fh)
+        hoja = wb.get_sheet_by_index(0)
+        return _limitar(hoja.iter_rows())
+
+
 def _leer_xlsx(ruta):
     from openpyxl import load_workbook
     # Se pasa el archivo abierto (no la ruta) para que openpyxl no rechace
@@ -254,7 +267,17 @@ def leer_archivo(archivo, separador=''):
     try:
         with open(ruta, 'rb') as fh:
             cabecera = fh.read(512)
-        if ext in EXT_TEXTO:
+        filas = None
+        if ext in EXT_HOJAS and not re.match(rb'\s*<', cabecera[:200]):
+            try:
+                filas = _leer_calamine(ruta)
+            except ArchivoInvalido:
+                raise
+            except Exception:
+                filas = None   # se prueba con el lector clásico
+        if filas is not None:
+            pass
+        elif ext in EXT_TEXTO:
             filas = _leer_texto(ruta, separador)
         elif ext in EXT_EXCEL:
             filas = _leer_xlsx(ruta)

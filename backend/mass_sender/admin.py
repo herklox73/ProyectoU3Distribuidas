@@ -589,7 +589,9 @@ def _send_campaign_background(campaign_id, contact_ids):
         campaign = Campaign.objects.get(id=campaign_id)
         # Solo contactos del dueño de la campaña: cada usuario envía a SU
         # libreta y desde SU número de WhatsApp.
-        contacts = list(Contact.objects.filter(id__in=contact_ids, owner_id=campaign.owner_id))
+        # Con cientos de miles de contactos no se cargan todos a la vez (memoria
+        # y límite de parámetros de SQLite): se leen lote por lote más abajo.
+        contact_ids = sorted(contact_ids)
 
         # ─── Respetar la hora programada ───
         if campaign.scheduled_at:
@@ -660,13 +662,16 @@ def _send_campaign_background(campaign_id, contact_ids):
                 print(f"[MassSend] Usando media_url: {campaign.media_url}")
 
         # ─── Dividir contactos en lotes ───
-        lotes = [contacts[i:i + BATCH_SIZE] for i in range(0, len(contacts), BATCH_SIZE)]
-        total_lotes = len(lotes)
-        print(f"[MassSend] Total contactos: {len(contacts)} | Lotes: {total_lotes} de {BATCH_SIZE} | "
+        lotes_ids = [contact_ids[i:i + BATCH_SIZE] for i in range(0, len(contact_ids), BATCH_SIZE)]
+        total_lotes = len(lotes_ids)
+        print(f"[MassSend] Total contactos: {len(contact_ids)} | Lotes: {total_lotes} de {BATCH_SIZE} | "
               f"Delay mensajes: {DELAY_ENTRE_MENSAJES}s | Pausa entre lotes: {DELAY_ENTRE_LOTES}s")
 
         # ─── Enviar lote por lote ───
-        for num_lote, lote in enumerate(lotes, start=1):
+        for num_lote, ids_lote in enumerate(lotes_ids, start=1):
+            # Solo contactos del dueño de la campaña; los borrados mientras
+            # tanto simplemente no aparecen
+            lote = list(Contact.objects.filter(id__in=ids_lote, owner_id=campaign.owner_id).order_by('id'))
             print(f"[MassSend] === Lote {num_lote}/{total_lotes} ({len(lote)} contactos) ===")
 
             for contact in lote:

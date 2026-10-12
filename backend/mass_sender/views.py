@@ -79,13 +79,43 @@ def chat_view(request):
     provider = ApiProvider.objects.filter(is_active=True).first()
     return render(request, 'mass_sender/chat.html', {'provider': provider})
 
+MAX_CHATS = 300                 # conversaciones que carga el chat
+MAX_CHATS_SIN_MENSAJES = 2000   # hasta este tamaño de libreta se listan también contactos sin mensajes
+MAX_MENSAJES_CHAT = 200         # últimos mensajes por conversación
+
+
 def api_leer_mensajes(request):
     user = _get_user(request)
     if not user:
         return JsonResponse({'error': 'No autenticado'}, status=401)
     provider = ApiProvider.objects.filter(is_active=True).first()
-    # Excluir contactos con JIDs invalidos (@lid, @g.us, @newsletter, etc.)
-    contacts = Contact.objects.filter(owner=user).exclude(phone_number__contains='@').order_by('-created_at')
+    from django.db.models import Max
+
+    # Conversaciones: las 300 más recientes con mensajes (antes se recorrían
+    # TODOS los contactos con una consulta cada uno, lo que no aguanta
+    # libretas de cientos de miles de contactos).
+    ultimos = (
+        Message.objects.filter(owner=user).exclude(phone_number__contains='@')
+        .values('phone_number').annotate(ultimo=Max('sent_at')).order_by('-ultimo')[:MAX_CHATS]
+    )
+    telefonos = [u['phone_number'] for u in ultimos]
+    contactos_por_tel = {
+        c.phone_number: c
+        for c in Contact.objects.filter(owner=user, phone_number__in=telefonos)
+    }
+    contacts = [contactos_por_tel[t] for t in telefonos if t in contactos_por_tel]
+    # Con libretas pequeñas también se listan los contactos sin mensajes
+    # (para poder empezar a escribirles desde el chat), como antes.
+    base = Contact.objects.filter(owner=user).exclude(phone_number__contains='@')
+    if base.count() <= MAX_CHATS_SIN_MENSAJES:
+        ya = set(contactos_por_tel)
+        contacts += [c for c in base.order_by('-created_at') if c.phone_number not in ya]
+
+    mensajes_por_tel = {}
+    for m in (Message.objects.filter(owner=user, phone_number__in=[c.phone_number for c in contacts])
+              .order_by('sent_at')):
+        mensajes_por_tel.setdefault(m.phone_number, []).append(m)
+
     mensajes_dict = {}
 
     for contact in contacts:
@@ -93,9 +123,7 @@ def api_leer_mensajes(request):
         if num.startswith('+'):
             num = num[1:]
 
-        mensajes_qs = Message.objects.filter(
-            owner=user, phone_number=contact.phone_number
-        ).exclude(phone_number__contains='@').order_by('sent_at')
+        mensajes_qs = mensajes_por_tel.get(contact.phone_number, [])[-MAX_MENSAJES_CHAT:]
 
         msgs_list = []
         for m in mensajes_qs:
@@ -1028,7 +1056,10 @@ def api_contactos_list(request):
         contactos = qs[(page - 1) * per_page: page * per_page]
 
         # Obtener etiquetas únicas para los filtros
-        all_tags_raw = Contact.objects.filter(owner=user).exclude(tags__isnull=True).exclude(tags='').values_list('tags', flat=True)
+        # distinct(): con cientos de miles de contactos solo se leen las
+        # combinaciones de etiquetas distintas, no una fila por contacto
+        all_tags_raw = Contact.objects.filter(owner=user).exclude(tags__isnull=True).exclude(tags='') \
+            .values_list('tags', flat=True).distinct()
         tags_set = set()
         for t in all_tags_raw:
             for part in t.split(','):
@@ -1176,7 +1207,20 @@ def api_contactos_leer_archivo(request):
         return JsonResponse({'error': str(e)}, status=400)
     except Exception:
         return JsonResponse({'error': 'No se pudo leer el archivo. Revisa que no esté dañado.'}, status=400)
-    return JsonResponse({'headers': encabezados, 'rows': filas, 'total': len(filas)})
+    # Se envía por partes (streaming): con 300.000 filas no se arma en
+    # memoria un JSON gigante de una sola vez.
+    from django.http import StreamingHttpResponse
+
+    def generar(filas=filas):
+        yield '{"headers": ' + json.dumps(encabezados, ensure_ascii=False)
+        yield ', "total": %d, "rows": [' % len(filas)
+        for i in range(0, len(filas), 2000):
+            bloque = filas[i:i + 2000]
+            yield (',' if i else '') + ','.join(json.dumps(f, ensure_ascii=False) for f in bloque)
+            filas[i:i + 2000] = [None] * len(bloque)   # libera memoria a medida que se envía
+        yield ']}'
+
+    return StreamingHttpResponse(generar(), content_type='application/json; charset=utf-8')
 
 
 # ── Mensajes ──────────────────────────────────────────────────────────────

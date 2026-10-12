@@ -61,7 +61,7 @@ services:
     networks:
       - masssend_network
     restart: unless-stopped
-    mem_limit: 320m
+    mem_limit: 512m
 
   # Sin el servicio de cola de correos: en este despliegue no se envían correos.
   whatsapp:

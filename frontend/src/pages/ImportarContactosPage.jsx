@@ -48,7 +48,7 @@ const EXT_EXCEL = ['.xlsx', '.xls', '.xlsm', '.xlsb', '.xltx', '.xltm', '.ods']
 const EXT_TEXTO = ['.csv', '.txt', '.tsv']
 const EXTENSIONES = [...EXT_EXCEL, ...EXT_TEXTO]
 const MAX_MB = 1024   // 1 GB para Excel y CSV
-const LOTE_IMPORTACION = 1000   // contactos por petición al importar
+const LOTE_IMPORTACION = 2000   // contactos por petición al importar
 const FILAS_VISTA = 300          // filas que se dibujan en la vista previa
 
 function descargarPlantilla() {
@@ -182,11 +182,13 @@ export default function ImportarContactosPage() {
     }
     })
   }, [parsed, mapeo])
-  const corregidos      = filasVistas.filter(r => r.corregido).length
+  // Memorizados: con 300.000 filas no se recalculan en cada actualización
+  // del progreso de importación
+  const corregidos      = useMemo(() => filasVistas.filter(r => r.corregido).length, [filasVistas])
 
-  const filasValidas    = filasVistas.filter(r => r.telOk)
-  const filasInvalidas  = filasVistas.filter(r => !r.telOk)
-  const selValidas      = filasValidas.filter(r => seleccionados.has(r._i))
+  const filasValidas    = useMemo(() => filasVistas.filter(r => r.telOk), [filasVistas])
+  const filasInvalidas  = useMemo(() => filasVistas.filter(r => !r.telOk), [filasVistas])
+  const selValidas      = useMemo(() => filasValidas.filter(r => seleccionados.has(r._i)), [filasValidas, seleccionados])
   const telColAsignada  = Object.values(mapeo).includes('telefono')
 
   const toggleRow = (i) => setSeleccionados(prev => {
@@ -205,7 +207,7 @@ export default function ImportarContactosPage() {
     })
   }
 
-  // Se envía en partes de 1.000 para que archivos grandes (25.000+ filas)
+  // Se envía en partes de 2.000 para que archivos grandes (300.000 filas)
   // no se queden colgados y se vea el avance.
   const importar = async () => {
     if (!selValidas.length) return
