@@ -66,6 +66,7 @@ urlpatterns = [
     path('api/contactos/leer-archivo/', views.api_contactos_leer_archivo, name='api_contactos_leer_archivo'),
     path('api/contactos/exportar/', views.api_contactos_exportar, name='api_contactos_exportar'),
     path('api/contactos/etiquetas/', views.api_contactos_etiquetas, name='api_contactos_etiquetas'),
+    path('api/campanas/<int:pk>/cancelar/', views.api_campanas_cancelar, name='api_campanas_cancelar'),
     path('api/usuarios-contactos/', views.api_usuarios_contactos, name='api_usuarios_contactos'),
     path('api/contactos/bulk-delete/', views.api_contactos_bulk_delete, name='api_contactos_bulk_delete'),
     path('api/contactos/<int:pk>/', views.api_contactos_detail, name='api_contactos_detail'),

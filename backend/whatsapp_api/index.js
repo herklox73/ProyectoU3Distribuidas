@@ -520,6 +520,16 @@ app.post('/api/request-pairing', (req, res) => {
     res.status(410).json({ success: false, error: 'La vinculación por código está desactivada. Usa el código QR.' });
 });
 
+// Cancelar campaña: descarta los mensajes del usuario que aún esperan en la cola
+app.post('/api/clear-queue', (req, res) => {
+    const uid = requireUser(req, res); if (!uid) return;
+    const s = getSession(uid);
+    const quitados = s ? s.queue.length : 0;
+    if (s) s.queue = [];
+    if (quitados) console.log(`[WA ${uid}] Cola vaciada (${quitados} mensajes) por cancelación.`);
+    res.json({ success: true, quitados });
+});
+
 app.post('/api/logout', async (req, res) => {
     const uid = requireUser(req, res); if (!uid) return;
     const s = getSession(uid, true);

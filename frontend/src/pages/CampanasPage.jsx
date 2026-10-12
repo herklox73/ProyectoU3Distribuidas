@@ -192,6 +192,25 @@ export default function CampanasPage() {
     })
   }
 
+  // ── Cancelar un envío en curso (con confirmación) ─────────────────
+  const [aCancelar, setACancelar] = useState(null)   // campaña a confirmar
+  const [cancelando, setCancelando] = useState(false)
+
+  const confirmarCancelacion = async () => {
+    if (!aCancelar) return
+    setCancelando(true)
+    try {
+      const { data } = await axios.post(`/whatsapp/api/campanas/${aCancelar.id}/cancelar/`)
+      sileo.success({ title: 'Envío cancelado', description: `"${aCancelar.nombre}" se detuvo. Se alcanzaron a enviar ${data.enviados ?? 0} mensajes.` })
+      setACancelar(null)
+      cargar()
+    } catch (e) {
+      sileo.error({ title: 'No se pudo cancelar', description: e.response?.data?.error || 'Intenta de nuevo' })
+    } finally {
+      setCancelando(false)
+    }
+  }
+
   const ejecutar = async (c) => {
     setEjecutando(prev => new Set([...prev, c.id]))
     try {
@@ -324,7 +343,17 @@ export default function CampanasPage() {
                 </div>
 
                 <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-                  {c.status !== 'running' && (
+                  {(c.status === 'running' || c.status === 'scheduled' || p?.is_running) && (
+                    <button onClick={() => setACancelar(c)} style={{
+                      padding: '6px 14px', background: '#fff', color: '#b42318',
+                      border: '1.5px solid #fca5a5', borderRadius: 7, cursor: 'pointer', fontSize: '0.78rem', fontWeight: 700,
+                      display: 'flex', alignItems: 'center', gap: 6,
+                    }}>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2" /></svg>
+                      Cancelar envío
+                    </button>
+                  )}
+                  {c.status !== 'running' && c.status !== 'scheduled' && (
                     <button
                       onClick={() => ejecutar(c)}
                       disabled={ejecutando.has(c.id)}
@@ -341,13 +370,13 @@ export default function CampanasPage() {
                       {ejecutando.has(c.id) ? <><Spinner /> Ejecutando...</> : 'Ejecutar'}
                     </button>
                   )}
-                  {c.status !== 'running' && (
+                  {c.status !== 'running' && c.status !== 'scheduled' && (
                     <button onClick={() => abrirEditar(c)} style={{
                       padding: '6px 14px', background: '#f3f4f6', color: '#374151',
                       border: 'none', borderRadius: 7, cursor: 'pointer', fontSize: '0.78rem', fontWeight: 600
                     }}>Editar</button>
                   )}
-                  {c.status !== 'running' && (
+                  {c.status !== 'running' && c.status !== 'scheduled' && (
                     <button onClick={() => eliminar(c)} style={{
                       padding: '6px 14px', background: '#fee2e2', color: '#991b1b',
                       border: 'none', borderRadius: 7, cursor: 'pointer', fontSize: '0.78rem', fontWeight: 600
@@ -360,6 +389,36 @@ export default function CampanasPage() {
           )
         })}
       </div>
+
+      {aCancelar && (
+        <Modal titulo="¿Cancelar el envío?" onClose={() => !cancelando && setACancelar(null)}>
+          <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', marginBottom: 18 }}>
+            <div style={{ width: 40, height: 40, borderRadius: '50%', background: '#fee2e2', color: '#b42318', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M12 9v4" /><path d="M12 17h.01" /><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />
+              </svg>
+            </div>
+            <div style={{ fontSize: '0.88rem', color: '#374151', lineHeight: 1.55 }}>
+              ¿Seguro que quieres cancelar el envío de la campaña <b>"{aCancelar.nombre}"</b>?
+              <div style={{ marginTop: 8, fontSize: '0.8rem', color: '#6b7280' }}>
+                Se detiene en unos segundos y no se enviarán los mensajes que faltan
+                {aCancelar.progreso ? <> (van <b>{aCancelar.progreso.sent}</b> de <b>{aCancelar.progreso.total}</b>)</> : null}.
+                Los mensajes que ya salieron no se pueden deshacer.
+              </div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+            <button onClick={() => setACancelar(null)} disabled={cancelando}
+              style={{ padding: '9px 18px', background: '#f3f4f6', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: '0.85rem' }}>
+              No, seguir enviando
+            </button>
+            <button onClick={confirmarCancelacion} disabled={cancelando}
+              style={{ padding: '9px 18px', background: cancelando ? '#f87171' : '#dc2626', color: '#fff', border: 'none', borderRadius: 8, cursor: cancelando ? 'wait' : 'pointer', fontWeight: 700, fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: 6 }}>
+              {cancelando ? <><Spinner /> Cancelando…</> : 'Sí, cancelar envío'}
+            </button>
+          </div>
+        </Modal>
+      )}
 
       {(modal === 'crear' || modal === 'editar') && (
         <Modal titulo={modal === 'crear' ? 'Nueva campaña' : 'Editar campaña'} onClose={() => setModal(null)}>

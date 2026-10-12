@@ -585,6 +585,24 @@ def _send_campaign_background(campaign_id, contact_ids):
     from django.db import connection
     from mass_sender.models import Campaign, Contact, Message, CampaignProgress
 
+    class _Cancelada(Exception):
+        pass
+
+    def cancelada():
+        # El usuario puede cancelar desde la página (estado 'cancelled')
+        return Campaign.objects.filter(id=campaign_id, status='cancelled').exists()
+
+    def dormir(segundos):
+        # Pausa en tramos cortos para reaccionar rápido a una cancelación
+        fin = time.monotonic() + segundos
+        while True:
+            if cancelada():
+                raise _Cancelada()
+            resto = fin - time.monotonic()
+            if resto <= 0:
+                return
+            time.sleep(min(2, resto))
+
     try:
         campaign = Campaign.objects.get(id=campaign_id)
         # Solo contactos del dueño de la campaña: cada usuario envía a SU
@@ -597,15 +615,14 @@ def _send_campaign_background(campaign_id, contact_ids):
         if campaign.scheduled_at:
             now = timezone.now()
             if campaign.scheduled_at > now:
-                campaign.status = 'scheduled'
-                campaign.save()
+                Campaign.objects.filter(id=campaign_id).exclude(status='cancelled').update(status='scheduled')
                 print(f"[MassSend] Campana '{campaign.name}' programada para {campaign.scheduled_at}. Esperando...")
                 while True:
                     now = timezone.now()
                     if now >= campaign.scheduled_at:
                         break
                     segundos_restantes = (campaign.scheduled_at - now).total_seconds()
-                    time.sleep(min(60, segundos_restantes))
+                    dormir(min(60, segundos_restantes))
                 print(f"[MassSend] Hora alcanzada. Iniciando envio de '{campaign.name}'.")
 
         # ─── Inicializar progreso ───
@@ -617,8 +634,9 @@ def _send_campaign_background(campaign_id, contact_ids):
         progress.last_error = None
         progress.save()
 
-        campaign.status = 'running'
-        campaign.save()
+        if cancelada():
+            raise _Cancelada()
+        Campaign.objects.filter(id=campaign_id).update(status='running')
 
         # ─── Preparar media UNA SOLA VEZ ───
         media_payload = {}
@@ -675,6 +693,8 @@ def _send_campaign_background(campaign_id, contact_ids):
             print(f"[MassSend] === Lote {num_lote}/{total_lotes} ({len(lote)} contactos) ===")
 
             for contact in lote:
+                if cancelada():
+                    raise _Cancelada()
                 nombre        = contact.full_name or "Amigo"
                 mensaje_final = campaign.message_template.replace('{{nombre}}', nombre)
                 if contact.custom_data:
@@ -726,23 +746,26 @@ def _send_campaign_background(campaign_id, contact_ids):
                 progress.save()
 
                 # Pausa entre mensajes dentro del mismo lote
-                time.sleep(DELAY_ENTRE_MENSAJES)
+                dormir(DELAY_ENTRE_MENSAJES)
 
             # Pausa entre lotes (excepto después del último)
             if num_lote < total_lotes:
                 print(f"[MassSend] Lote {num_lote} completado. "
                       f"Esperando {DELAY_ENTRE_LOTES}s antes del siguiente lote...")
-                time.sleep(DELAY_ENTRE_LOTES)
+                dormir(DELAY_ENTRE_LOTES)
 
         # ─── Finalizar ───
-        campaign.status = 'completed'
-        campaign.save()
+        Campaign.objects.filter(id=campaign_id).exclude(status='cancelled').update(status='completed')
         progress.is_running  = False
         progress.finished_at = timezone.now()
         progress.save()
         print(f"[MassSend] Campana '{campaign.name}' completada. "
               f"Enviados: {progress.sent} | Fallidos: {progress.failed}")
 
+    except _Cancelada:
+        print(f"[MassSend] Campana {campaign_id} cancelada por el usuario.")
+        CampaignProgress.objects.filter(campaign_id=campaign_id).update(
+            is_running=False, finished_at=timezone.now(), last_error='Envío cancelado por el usuario.')
     except Exception as e:
         print(f"[MassSend] Error critico en campana {campaign_id}: {e}")
         try:

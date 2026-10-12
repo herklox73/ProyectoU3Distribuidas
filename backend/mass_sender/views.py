@@ -1230,6 +1230,50 @@ def api_contactos_importar(request):
         return JsonResponse({'success': False, 'error': str(e)}, status=500)
 
 
+@csrf_exempt
+def api_campanas_cancelar(request, pk):
+    """
+    Cancela el envío de una campaña en curso o programada. El hilo de envío
+    lo nota en segundos y se detiene; los mensajes ya enviados no se deshacen.
+    """
+    user = _get_user(request)
+    if not user:
+        return JsonResponse({'error': 'No autenticado'}, status=401)
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Método no permitido'}, status=405)
+    campana = Campaign.objects.filter(pk=pk).first()
+    if not campana:
+        return JsonResponse({'error': 'Campaña no encontrada'}, status=404)
+    if not _es_dueno_o_staff(user, campana):
+        return JsonResponse({'error': 'No autorizado'}, status=403)
+    if campana.status not in ('running', 'scheduled'):
+        return JsonResponse({'success': False, 'error': 'La campaña no se está enviando.'}, status=400)
+
+    Campaign.objects.filter(pk=pk).update(status='cancelled')
+    CampaignProgress.objects.filter(campaign=campana).update(
+        is_running=False, finished_at=timezone.now(), last_error='Envío cancelado por el usuario.')
+
+    # Vaciar los mensajes que el gateway aún no alcanzó a enviar de ese número
+    quitados = 0
+    try:
+        r = requests.post(_whatsapp_url('/api/clear-queue'), json={'user_id': campana.owner_id},
+                          headers=internal_headers(), timeout=5)
+        quitados = r.json().get('quitados', 0)
+    except Exception:
+        pass
+    # Los que quedaron en espera ya no saldrán
+    Message.objects.filter(campaign=campana, delivery_status='pending').update(
+        delivery_status='failed', error_log='Campaña cancelada antes de enviarse')
+
+    progreso = getattr(campana, 'progress', None)
+    return JsonResponse({
+        'success': True,
+        'message': 'Envío cancelado.',
+        'enviados': progreso.sent if progreso else 0,
+        'quitados_de_cola': quitados,
+    })
+
+
 def api_contactos_etiquetas(request):
     """
     Etiquetas del usuario con cuántos contactos tiene cada una, y cuántos
