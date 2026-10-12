@@ -24,6 +24,7 @@ from .internal_auth import internal_headers, is_internal_request, make_ws_ticket
 from .telefonos import normalizar_telefono
 from .estados import RANGO, aplicar_estado, puede_cambiar
 from . import reportes
+from . import etiquetas as etiquetas_util
 
 def _whatsapp_url(path):
     """Devuelve la URL completa del servicio WhatsApp API."""
@@ -860,7 +861,7 @@ def api_campanas_list(request):
                     owner=user,
                     name=data.get('nombre', '').strip(),
                     message_template=data.get('mensaje', '').strip(),
-                    target_tags=data.get('target_tags', '').strip() or None,
+                    target_tags=', '.join(etiquetas_util.separar(data.get('target_tags', ''))) or None,
                     media_url=data.get('media_url', '').strip() or None,
                     status='draft',
                 )
@@ -947,7 +948,7 @@ def api_campanas_detail(request, pk):
             with transaction.atomic():
                 campana.name             = _get('nombre',      campana.name)
                 campana.message_template = _get('mensaje',     campana.message_template)
-                campana.target_tags      = _get('target_tags', campana.target_tags) or None
+                campana.target_tags      = ', '.join(etiquetas_util.separar(_get('target_tags', campana.target_tags) or '')) or None
                 campana.media_url        = _get('media_url',   campana.media_url)   or None
                 if media_file:
                     from .pocketbase_media import subir_media_campana
@@ -1023,7 +1024,8 @@ def api_campanas_ejecutar(request, pk):
         # Se envía a los contactos del dueño de la campaña, desde SU número
         qs = Contact.objects.filter(owner=campana.owner or user, is_opted_out=False).exclude(phone_number__contains='@')
         if campana.target_tags:
-            qs = qs.filter(tags__icontains=campana.target_tags.strip())
+            # Una o varias etiquetas separadas por coma: basta con tener una
+            qs = etiquetas_util.filtrar(qs, campana.target_tags)
 
         contact_ids = list(qs.values_list('id', flat=True))
         if not contact_ids:
@@ -1226,6 +1228,23 @@ def api_contactos_importar(request):
         return JsonResponse({'success': True, **resultado})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=500)
+
+
+def api_contactos_etiquetas(request):
+    """
+    Etiquetas del usuario con cuántos contactos tiene cada una, y cuántos
+    contactos recibirían una campaña con ?seleccion=a,b (vacío = todos).
+    """
+    user = _get_user(request)
+    if not user:
+        return JsonResponse({'error': 'No autenticado'}, status=401)
+    base = Contact.objects.filter(owner=user, is_opted_out=False).exclude(phone_number__contains='@')
+    seleccion = request.GET.get('seleccion', '')
+    return JsonResponse({
+        'etiquetas': etiquetas_util.disponibles(base),
+        'total': base.count(),
+        'destinatarios': etiquetas_util.filtrar(base, seleccion).count(),
+    })
 
 
 def api_usuarios_contactos(request):

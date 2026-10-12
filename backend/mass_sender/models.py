@@ -86,9 +86,10 @@ class Campaign(models.Model):
         help_text="Sube una imagen (JPG, PNG, WEBP) o video (MP4). Si subes archivo, tiene prioridad sobre la URL."
     )
     target_tags = models.CharField(
-        max_length=255, blank=True, null=True,
-        verbose_name="Filtrar por etiqueta",
-        help_text="Deja en blanco para enviar a TODOS. Escribe una etiqueta (ej: cliente) para enviar solo a contactos con esa etiqueta."
+        max_length=2000, blank=True, null=True,
+        verbose_name="Filtrar por etiquetas",
+        help_text="Deja en blanco para enviar a TODOS. Una o varias etiquetas separadas por coma "
+                  "(ej: norte, sur): se envía a los contactos que tengan cualquiera de ellas."
     )
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft', verbose_name="Estado")
     scheduled_at = models.DateTimeField(blank=True, null=True, verbose_name="Programada para")

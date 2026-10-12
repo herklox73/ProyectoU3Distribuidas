@@ -879,7 +879,8 @@ class CampaignAdmin(ModelAdmin):
         tag_global = campanas_con_tag.pop() if len(campanas_con_tag) == 1 else None
 
         if tag_global:
-            qs = qs.filter(tags__icontains=tag_global)
+            from .etiquetas import filtrar
+            qs = filtrar(qs, tag_global)
 
         contacts = list(qs.values_list('id', flat=True))
 

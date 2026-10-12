@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { sileo } from 'sileo'
 import axios from '../api/axios'
+import SelectorEtiquetas from '../components/campanas/SelectorEtiquetas'
 
 // Límites de WhatsApp (bytes)
 const WA_LIMITS = {
@@ -267,11 +268,11 @@ export default function CampanasPage() {
                         <Spinner /> Ejecutando...
                       </span>
                     )}
-                    {c.target_tags && (
-                      <span style={{ padding: '2px 8px', borderRadius: 20, fontSize: '0.7rem', background: '#f3e8ff', color: '#7c3aed' }}>
-                        {c.target_tags}
+                    {c.target_tags && c.target_tags.split(',').map(t => t.trim()).filter(Boolean).map(t => (
+                      <span key={t} style={{ padding: '2px 8px', borderRadius: 20, fontSize: '0.7rem', background: '#f3e8ff', color: '#7c3aed' }}>
+                        {t}
                       </span>
-                    )}
+                    ))}
                   </div>
                   <p style={{ fontSize: '0.8rem', color: '#888', margin: 0 }}>{c.mensaje}</p>
 
@@ -378,8 +379,8 @@ export default function CampanasPage() {
               </div>
             </div>
             <div>
-              <label style={labelStyle}>Filtrar por etiqueta (opcional)</label>
-              <input style={inputStyle} value={form.target_tags} onChange={e => setForm({ ...form, target_tags: e.target.value })} placeholder="Ej: cliente — vacío = enviar a todos" />
+              <label style={labelStyle}>Enviar a contactos con estas etiquetas (opcional)</label>
+              <SelectorEtiquetas value={form.target_tags} onChange={v => setForm(f => ({ ...f, target_tags: v }))} />
             </div>
             {/* Media */}
             <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: '14px 16px', background: '#fafafa' }}>
