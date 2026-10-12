@@ -8,9 +8,9 @@ Formatos aceptados:
   - LibreOffice / OpenOffice: .ods            (lector propio, sin dependencias)
   - Texto: .csv .txt .tsv                     (separador detectado solo)
 
-Los Excel pueden pesar hasta 1 GB (por ejemplo, con imágenes o formatos):
-se leen desde el archivo temporal que Django crea durante la subida, por
-partes, sin cargarlo entero en memoria. Django borra ese temporal al terminar
+Los archivos (Excel o CSV) pueden pesar hasta 1 GB: se leen desde el archivo
+temporal que Django crea durante la subida, por partes, sin cargarlo entero
+en memoria. Django borra ese temporal al terminar
 la petición, así que no se guarda nada en el servidor. Lo que sí tiene tope es
 la cantidad de filas (MAX_FILAS), porque todas viajan a la vista previa.
 """
@@ -27,9 +27,9 @@ EXT_HOJAS = EXT_EXCEL | {'.xls', '.xlsb', '.ods'}      # Excel y similares
 EXTENSIONES = EXT_HOJAS | EXT_TEXTO
 
 MAX_BYTES_EXCEL = 1024 * 1024 * 1024    # 1 GB
-MAX_BYTES_TEXTO = 50 * 1024 * 1024      # 50 MB
 MAX_FILAS = 200_000
 MAX_COLUMNAS = 60
+MAX_CARACTERES = 255   # por celda: ningún campo del contacto guarda más
 
 
 class ArchivoInvalido(Exception):
@@ -58,7 +58,7 @@ def _texto(valor):
 
 def _limpiar(filas):
     """Quita filas vacías, recorta columnas vacías al final y separa el encabezado."""
-    filas = [[_texto(c) for c in f[:MAX_COLUMNAS]] for f in filas]
+    filas = [[_texto(c)[:MAX_CARACTERES] for c in f[:MAX_COLUMNAS]] for f in filas]
     filas = [f for f in filas if any(c for c in f)]
     if not filas:
         raise ArchivoInvalido('El archivo no tiene datos.')
@@ -73,7 +73,9 @@ def _limpiar(filas):
 def _limitar(iterable):
     filas = []
     for fila in iterable:
-        filas.append(list(fila))
+        # Se recorta cada celda al leer: un archivo enorme por notas largas
+        # no llena la memoria
+        filas.append([c[:MAX_CARACTERES] if isinstance(c, str) else c for c in fila[:MAX_COLUMNAS]])
         if len(filas) > MAX_FILAS + 1:
             raise ArchivoInvalido(f'El archivo tiene más de {MAX_FILAS:,} filas. Divídelo en partes.'.replace(',', '.'))
     return filas
@@ -180,23 +182,27 @@ def _leer_ods(ruta):
     return filas
 
 
-def _leer_texto(datos, separador=''):
-    for codif in ('utf-8-sig', 'cp1252', 'latin-1'):
-        try:
-            texto = datos.decode(codif)
-            break
-        except UnicodeDecodeError:
-            continue
+def _leer_texto(ruta, separador=''):
+    """CSV/TXT leído línea a línea desde disco (sirve para archivos de 1 GB)."""
+    with open(ruta, 'rb') as fh:
+        crudo = fh.read(256 * 1024)
+    # Codificación: UTF-8 si la muestra lo es; si no, la de Excel en Windows
+    try:
+        crudo.decode('utf-8-sig')
+        codif = 'utf-8-sig'
+    except UnicodeDecodeError as e:
+        # La muestra pudo cortar un carácter a la mitad justo al final
+        codif = 'utf-8-sig' if e.start >= len(crudo) - 4 else 'cp1252'
+    muestra = crudo.decode(codif, errors='replace')[:20000]
     if not separador:
-        muestra = texto[:20000]
         try:
             separador = csv.Sniffer().sniff(muestra, delimiters=',;\t|').delimiter
         except csv.Error:
             # Se elige el separador que más aparece en la primera línea
             primera = muestra.splitlines()[0] if muestra else ''
             separador = max(',;\t|', key=primera.count) if primera else ','
-    lector = csv.reader(io.StringIO(texto, newline=''), delimiter=separador)
-    return _limitar(lector)
+    with open(ruta, 'r', encoding=codif, errors='replace', newline='') as fh:
+        return _limitar(csv.reader(fh, delimiter=separador))
 
 
 def leer_archivo(archivo, separador=''):
@@ -205,16 +211,10 @@ def leer_archivo(archivo, separador=''):
     ext = '.' + nombre.rsplit('.', 1)[-1] if '.' in nombre else ''
     if ext not in EXTENSIONES:
         raise ArchivoInvalido('Formato no soportado. Usa Excel (.xlsx, .xls, .xlsm, .xlsb), .ods o .csv.')
-    if ext in EXT_HOJAS and archivo.size > MAX_BYTES_EXCEL:
-        raise ArchivoInvalido('El Excel supera el límite de 1 GB.')
-    if ext in EXT_TEXTO and archivo.size > MAX_BYTES_TEXTO:
-        raise ArchivoInvalido('El CSV supera el límite de 50 MB. Guárdalo como Excel (.xlsx) para subir hasta 1 GB.')
+    if archivo.size > MAX_BYTES_EXCEL:
+        raise ArchivoInvalido('El archivo supera el límite de 1 GB.')
 
-    if ext in EXT_TEXTO:
-        return _limpiar(_leer_texto(archivo.read(), separador))
-
-    # Hojas de cálculo: se leen desde una ruta en disco (el temporal de la
-    # subida). Si el archivo es pequeño y Django lo tuvo en memoria, se
+    # Se lee desde una ruta en disco (el temporal de la subida). Si el archivo es pequeño y Django lo tuvo en memoria, se
     # escribe un temporal propio que se borra al terminar.
     import os
     import tempfile
@@ -230,7 +230,9 @@ def leer_archivo(archivo, separador=''):
     try:
         with open(ruta, 'rb') as fh:
             cabecera = fh.read(512)
-        if ext in EXT_EXCEL:
+        if ext in EXT_TEXTO:
+            filas = _leer_texto(ruta, separador)
+        elif ext in EXT_EXCEL:
             filas = _leer_xlsx(ruta)
         elif ext == '.xls':
             # Algunos sistemas exportan HTML, CSV o xlsx con extensión .xls
@@ -241,10 +243,7 @@ def leer_archivo(archivo, separador=''):
             elif re.match(rb'\s*<', cabecera[:200]):
                 raise ArchivoInvalido('Este .xls es en realidad una página web. Ábrelo en Excel y guárdalo como .xlsx.')
             else:
-                if os.path.getsize(ruta) > MAX_BYTES_TEXTO:
-                    raise ArchivoInvalido('Este .xls es en realidad texto y supera 50 MB. Guárdalo como .xlsx.')
-                with open(ruta, 'rb') as fh:
-                    filas = _leer_texto(fh.read(), separador or '\t')
+                filas = _leer_texto(ruta, separador or '\t')
         elif ext == '.xlsb':
             filas = _leer_xlsb(ruta)
         else:

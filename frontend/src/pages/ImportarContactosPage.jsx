@@ -47,8 +47,7 @@ function normalizarTelefono(raw) {
 const EXT_EXCEL = ['.xlsx', '.xls', '.xlsm', '.xlsb', '.xltx', '.xltm', '.ods']
 const EXT_TEXTO = ['.csv', '.txt', '.tsv']
 const EXTENSIONES = [...EXT_EXCEL, ...EXT_TEXTO]
-const MAX_MB_EXCEL = 1024   // 1 GB
-const MAX_MB_TEXTO = 50
+const MAX_MB = 1024   // 1 GB para Excel y CSV
 const LOTE_IMPORTACION = 1000   // contactos por petición al importar
 const FILAS_VISTA = 300          // filas que se dibujan en la vista previa
 
@@ -106,10 +105,8 @@ export default function ImportarContactosPage() {
     if (!EXTENSIONES.some(ext => nombre.endsWith(ext))) {
       sileo.error({ title: 'Formato inválido', description: 'Usa Excel (.xlsx, .xls, .xlsm, .xlsb), .ods o .csv' }); return
     }
-    const esExcel = EXT_EXCEL.some(ext => nombre.endsWith(ext))
-    const limiteMb = esExcel ? MAX_MB_EXCEL : MAX_MB_TEXTO
-    if (file.size > limiteMb * 1024 * 1024) {
-      sileo.error({ title: 'Archivo muy grande', description: esExcel ? 'El límite para Excel es 1 GB' : 'El límite para CSV es 50 MB. Guárdalo como Excel (.xlsx) para subir hasta 1 GB.' })
+    if (file.size > MAX_MB * 1024 * 1024) {
+      sileo.error({ title: 'Archivo muy grande', description: 'El límite es 1 GB' })
       return
     }
     setArchivo(file)
@@ -281,7 +278,7 @@ export default function ImportarContactosPage() {
                 ? (subida != null && subida < 100 ? `Subiendo ${archivo?.name || 'archivo'}… ${subida}%` : `Leyendo ${archivo?.name || 'archivo'}…`)
                 : archivo ? archivo.name : 'Arrastra tu archivo aquí o haz clic para seleccionar'}
             </p>
-            <p style={{ fontSize: '0.75rem', color: '#aaa', margin: 0 }}>Excel (.xlsx, .xls, .xlsm, .xlsb) u .ods hasta 1 GB · .csv hasta 50 MB</p>
+            <p style={{ fontSize: '0.75rem', color: '#aaa', margin: 0 }}>Excel (.xlsx, .xls, .xlsm, .xlsb), .ods o .csv · hasta 1 GB</p>
             <input ref={inputRef} type="file" accept={EXTENSIONES.join(',')} onChange={onFileChange} style={{ display: 'none' }} />
           </div>
 
