@@ -3,7 +3,7 @@ from django.contrib.admin.widgets import AdminFileWidget
 from django.forms.widgets import Textarea
 from django.utils.safestring import mark_safe
 from unfold.admin import ModelAdmin
-from .models import ApiProvider, Contact, Campaign, Message, CampaignProgress
+from .models import ApiProvider, Contact, Campaign, Message, CampaignProgress, ConfigEnvio
 from .forms import ContactAdminForm
 import requests
 import threading
@@ -567,26 +567,48 @@ class MediaPreviewWidget(AdminFileWidget):
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN DE LOTES (ajusta aquí)
 # ─────────────────────────────────────────────
-BATCH_SIZE             = 50   # mensajes por lote
-DELAY_ENTRE_MENSAJES   = 3    # segundos entre cada mensaje dentro del lote
-DELAY_ENTRE_LOTES      = 120  # segundos de pausa entre lotes (2 minutos)
+BATCH_SIZE = 50   # contactos que se leen de la base a la vez (no afecta el ritmo)
+# El ritmo de envío (pausas aleatorias, pausas largas y límite diario) está
+# en mass_sender/modo_seguro.py
 
 
 # ─────────────────────────────────────────────
-# FUNCIÓN DE ENVÍO EN HILO DE FONDO (por lotes)
+# FUNCIÓN DE ENVÍO EN HILO DE FONDO (modo seguro)
 # ─────────────────────────────────────────────
-def _send_campaign_background(campaign_id, contact_ids):
+def _send_campaign_background(campaign_id, contact_ids, reanudar=False):
     """
-    Corre en un hilo separado.
-    Divide los contactos en lotes de BATCH_SIZE, envía cada lote con
-    DELAY_ENTRE_MENSAJES segundos entre mensajes y DELAY_ENTRE_LOTES
-    segundos de pausa entre lotes para evitar detección de spam por WhatsApp.
+    Corre en un hilo separado y envía uno por uno, en modo seguro:
+      - pausa aleatoria entre mensajes y una pausa larga cada pocos mensajes;
+      - límite diario por número: al llegar, la campaña queda 'paused' y
+        sigue sola al día siguiente;
+      - si el WhatsApp se desconecta o WhatsApp empieza a bloquear (463),
+        la campaña queda 'paused' hasta que el usuario pulse Reanudar.
+    Con reanudar=True no se reinicia el progreso (contact_ids son solo los
+    que faltan).
     """
     from django.db import connection
     from mass_sender.models import Campaign, Contact, Message, CampaignProgress
+    from mass_sender import modo_seguro
 
     class _Cancelada(Exception):
         pass
+
+    class _Pausada(Exception):
+        def __init__(self, motivo):
+            super().__init__(motivo)
+            self.motivo = motivo
+
+    estado = {'progress': None, 'ultimo_latido': 0.0}
+
+    def latir(forzar=False):
+        # Marca que el hilo sigue vivo (para no lanzar otro si se pulsa Reanudar)
+        progress = estado['progress']
+        if progress is None:
+            return
+        if forzar or time.monotonic() - estado['ultimo_latido'] >= 30:
+            estado['ultimo_latido'] = time.monotonic()
+            progress.latido = timezone.now()
+            CampaignProgress.objects.filter(pk=progress.pk).update(latido=progress.latido)
 
     def cancelada():
         # El usuario puede cancelar desde la página (estado 'cancelled')
@@ -598,6 +620,7 @@ def _send_campaign_background(campaign_id, contact_ids):
         while True:
             if cancelada():
                 raise _Cancelada()
+            latir()
             resto = fin - time.monotonic()
             if resto <= 0:
                 return
@@ -605,14 +628,17 @@ def _send_campaign_background(campaign_id, contact_ids):
 
     try:
         campaign = Campaign.objects.get(id=campaign_id)
-        # Solo contactos del dueño de la campaña: cada usuario envía a SU
-        # libreta y desde SU número de WhatsApp.
+        owner_id = campaign.owner_id
         # Con cientos de miles de contactos no se cargan todos a la vez (memoria
         # y límite de parámetros de SQLite): se leen lote por lote más abajo.
         contact_ids = sorted(contact_ids)
 
+        progress, _ = CampaignProgress.objects.get_or_create(campaign=campaign)
+        estado['progress'] = progress
+        latir(forzar=True)
+
         # ─── Respetar la hora programada ───
-        if campaign.scheduled_at:
+        if campaign.scheduled_at and not reanudar:
             now = timezone.now()
             if campaign.scheduled_at > now:
                 Campaign.objects.filter(id=campaign_id).exclude(status='cancelled').update(status='scheduled')
@@ -626,12 +652,20 @@ def _send_campaign_background(campaign_id, contact_ids):
                 print(f"[MassSend] Hora alcanzada. Iniciando envio de '{campaign.name}'.")
 
         # ─── Inicializar progreso ───
-        progress, _ = CampaignProgress.objects.get_or_create(campaign=campaign)
-        progress.total   = len(contact_ids)
-        progress.sent    = 0
-        progress.failed  = 0
+        if reanudar:
+            # Lo ya enviado se conserva; los que faltan se suman al total
+            ya = Message.objects.filter(campaign_id=campaign_id)
+            progress.failed = ya.filter(delivery_status__in=('failed', 'blocked')).count()
+            progress.sent = ya.count() - progress.failed
+            progress.total = progress.sent + progress.failed + len(contact_ids)
+        else:
+            progress.total = len(contact_ids)
+            progress.sent = 0
+            progress.failed = 0
         progress.is_running = True
         progress.last_error = None
+        progress.reanuda_at = None
+        progress.finished_at = None
         progress.save()
 
         if cancelada():
@@ -679,22 +713,74 @@ def _send_campaign_background(campaign_id, contact_ids):
                 media_payload = {'media_url': campaign.media_url}
                 print(f"[MassSend] Usando media_url: {campaign.media_url}")
 
-        # ─── Dividir contactos en lotes ───
-        lotes_ids = [contact_ids[i:i + BATCH_SIZE] for i in range(0, len(contact_ids), BATCH_SIZE)]
-        total_lotes = len(lotes_ids)
-        print(f"[MassSend] Total contactos: {len(contact_ids)} | Lotes: {total_lotes} de {BATCH_SIZE} | "
-              f"Delay mensajes: {DELAY_ENTRE_MENSAJES}s | Pausa entre lotes: {DELAY_ENTRE_LOTES}s")
+        # ─── Ritmo del modo seguro ───
+        cfg = modo_seguro.config_de(owner_id)
+        inicio_tanda = timezone.now()          # bloqueos se cuentan desde aquí
+        hasta_pausa_larga = modo_seguro.siguiente_pausa_larga()
+        primero = True
 
-        # ─── Enviar lote por lote ───
-        for num_lote, ids_lote in enumerate(lotes_ids, start=1):
+        lotes_ids = [contact_ids[i:i + BATCH_SIZE] for i in range(0, len(contact_ids), BATCH_SIZE)]
+        print(f"[MassSend] Campana '{campaign.name}': {len(contact_ids)} contactos | modo seguro: "
+              f"{cfg.pausa_min}-{cfg.pausa_max}s entre mensajes, pausa larga cada "
+              f"{modo_seguro.CADA_MIN}-{modo_seguro.CADA_MAX}, limite diario "
+              f"{cfg.limite_diario or 'sin limite'}")
+
+        # ─── Enviar uno por uno ───
+        for ids_lote in lotes_ids:
             # Solo contactos del dueño de la campaña; los borrados mientras
             # tanto simplemente no aparecen
-            lote = list(Contact.objects.filter(id__in=ids_lote, owner_id=campaign.owner_id).order_by('id'))
-            print(f"[MassSend] === Lote {num_lote}/{total_lotes} ({len(lote)} contactos) ===")
+            lote = list(Contact.objects.filter(id__in=ids_lote, owner_id=owner_id).order_by('id'))
 
             for contact in lote:
                 if cancelada():
                     raise _Cancelada()
+
+                # Se relee en cada mensaje: el usuario puede cambiarla en vivo
+                cfg = modo_seguro.config_de(owner_id)
+
+                # 1) Límite diario: esperar a mañana con la campaña en pausa
+                while cfg.limite_diario and modo_seguro.enviados_hoy(owner_id) >= cfg.limite_diario:
+                    reanuda = modo_seguro.proxima_reanudacion()
+                    hora = timezone.localtime(reanuda).strftime('%d/%m/%Y %H:%M')
+                    Campaign.objects.filter(id=campaign_id).exclude(status='cancelled').update(status='paused')
+                    progress.reanuda_at = reanuda
+                    progress.last_error = (f"Límite diario de {cfg.limite_diario} mensajes alcanzado. "
+                                           f"Sigue sola el {hora}.")
+                    progress.save()
+                    print(f"[MassSend] Campana {campaign_id}: limite diario ({cfg.limite_diario}) "
+                          f"alcanzado. Sigue el {hora}.")
+                    while timezone.now() < reanuda:
+                        dormir(min(60, (reanuda - timezone.now()).total_seconds()))
+                    cfg = modo_seguro.config_de(owner_id)
+                    Campaign.objects.filter(id=campaign_id, status='paused').update(status='running')
+                    progress.reanuda_at = None
+                    progress.last_error = None
+                    progress.save()
+                    inicio_tanda = timezone.now()
+                    primero = True
+                    print(f"[MassSend] Campana {campaign_id}: nuevo dia, se reanuda el envio.")
+
+                # 2) Pausa aleatoria (larga cada pocos mensajes)
+                if not primero:
+                    if hasta_pausa_larga <= 0:
+                        espera = modo_seguro.pausa_larga()
+                        print(f"[MassSend] Campana {campaign_id}: pausa larga de {int(espera)}s")
+                        dormir(espera)
+                        hasta_pausa_larga = modo_seguro.siguiente_pausa_larga()
+                    else:
+                        dormir(modo_seguro.pausa_entre_mensajes(cfg))
+                primero = False
+
+                # 3) ¿WhatsApp empezó a bloquear? Los avisos llegan solos
+                #    mientras se espera, así que se revisa justo antes de enviar.
+                bloqueados = Message.objects.filter(
+                    campaign_id=campaign_id, delivery_status='blocked', sent_at__gte=inicio_tanda).count()
+                if bloqueados >= modo_seguro.UMBRAL_BLOQUEOS:
+                    raise _Pausada(
+                        f"Pausada automáticamente: WhatsApp bloqueó {bloqueados} mensajes (error 463, "
+                        f"número restringido). Espera unas horas, escribe desde el celular a "
+                        f"contactos conocidos y luego pulsa Reanudar.")
+
                 nombre        = contact.full_name or "Amigo"
                 mensaje_final = campaign.message_template.replace('{{nombre}}', nombre)
                 if contact.custom_data:
@@ -705,7 +791,7 @@ def _send_campaign_background(campaign_id, contact_ids):
                 # WhatsApp: así los avisos de enviado/entregado/leído lo encuentran.
                 delivery_status = 'failed'
                 msg_obj = Message.objects.create(
-                    owner_id=campaign.owner_id,
+                    owner_id=owner_id,
                     campaign=campaign,
                     phone_number=contact.phone_number,
                     content=mensaje_final,
@@ -716,7 +802,7 @@ def _send_campaign_background(campaign_id, contact_ids):
                 try:
                     # Se normaliza al enviar: un número guardado como 5930987... (con el
                     # 0 de más) "se enviaba" pero WhatsApp nunca lo entregaba.
-                    payload = {"user_id": campaign.owner_id, "number": normalizar_o_igual(contact.phone_number),
+                    payload = {"user_id": owner_id, "number": normalizar_o_igual(contact.phone_number),
                                "message": mensaje_final, "message_id": msg_obj.wpp_message_id,
                                **media_payload}
                     res = requests.post(_whatsapp_url('/api/send'), json=payload, headers=internal_headers(), timeout=90)
@@ -724,7 +810,16 @@ def _send_campaign_background(campaign_id, contact_ids):
                     if res.status_code == 200:
                         delivery_status = 'pending'  # Node lo actualizará a 'sent'/'failed' via /api/send-result/
                         progress.sent += 1
+                        hasta_pausa_larga -= 1
                         print(f"[MassSend] Encolado → {contact.phone_number}")
+                    elif res.status_code == 503:
+                        # WhatsApp desconectado: este contacto no se intentó; se
+                        # borra su fila para que Reanudar lo envíe de nuevo.
+                        Message.objects.filter(pk=msg_obj.pk, delivery_status='pending').delete()
+                        progress.save()
+                        raise _Pausada(
+                            "Pausada automáticamente: tu WhatsApp se desconectó. Vuelve a vincularlo "
+                            "escaneando el QR y pulsa Reanudar.")
                     elif res.status_code == 422:
                         progress.failed += 1
                         progress.last_error = f"Sin WhatsApp: {contact.phone_number}"
@@ -734,6 +829,8 @@ def _send_campaign_background(campaign_id, contact_ids):
                         progress.last_error = f"Error {res.status_code} para {contact.phone_number}: {res.text[:80]}"
                         print(f"[MassSend] Error {res.status_code} → {contact.phone_number}")
 
+                except _Pausada:
+                    raise
                 except Exception as e:
                     progress.failed += 1
                     progress.last_error = str(e)[:200]
@@ -745,19 +842,11 @@ def _send_campaign_background(campaign_id, contact_ids):
                         delivery_status='failed', error_log=(progress.last_error or '')[:500])
                 progress.save()
 
-                # Pausa entre mensajes dentro del mismo lote
-                dormir(DELAY_ENTRE_MENSAJES)
-
-            # Pausa entre lotes (excepto después del último)
-            if num_lote < total_lotes:
-                print(f"[MassSend] Lote {num_lote} completado. "
-                      f"Esperando {DELAY_ENTRE_LOTES}s antes del siguiente lote...")
-                dormir(DELAY_ENTRE_LOTES)
-
         # ─── Finalizar ───
         Campaign.objects.filter(id=campaign_id).exclude(status='cancelled').update(status='completed')
         progress.is_running  = False
         progress.finished_at = timezone.now()
+        progress.latido      = None
         progress.save()
         print(f"[MassSend] Campana '{campaign.name}' completada. "
               f"Enviados: {progress.sent} | Fallidos: {progress.failed}")
@@ -765,7 +854,20 @@ def _send_campaign_background(campaign_id, contact_ids):
     except _Cancelada:
         print(f"[MassSend] Campana {campaign_id} cancelada por el usuario.")
         CampaignProgress.objects.filter(campaign_id=campaign_id).update(
-            is_running=False, finished_at=timezone.now(), last_error='Envío cancelado por el usuario.')
+            is_running=False, finished_at=timezone.now(), latido=None, reanuda_at=None,
+            last_error='Envío cancelado por el usuario.')
+    except _Pausada as p:
+        print(f"[MassSend] Campana {campaign_id} pausada: {p.motivo}")
+        Campaign.objects.filter(id=campaign_id).exclude(status='cancelled').update(status='paused')
+        CampaignProgress.objects.filter(campaign_id=campaign_id).update(
+            is_running=False, latido=None, reanuda_at=None, last_error=p.motivo)
+        try:
+            # Lo que quedó en la cola del gateway tampoco debe salir
+            owner = Campaign.objects.filter(id=campaign_id).values_list('owner_id', flat=True).first()
+            requests.post(_whatsapp_url('/api/clear-queue'), json={'user_id': owner},
+                          headers=internal_headers(), timeout=5)
+        except Exception:
+            pass
     except Exception as e:
         print(f"[MassSend] Error critico en campana {campaign_id}: {e}")
         try:
@@ -775,6 +877,7 @@ def _send_campaign_background(campaign_id, contact_ids):
             progress = CampaignProgress.objects.filter(campaign=campaign).first()
             if progress:
                 progress.is_running  = False
+                progress.latido      = None
                 progress.last_error  = f"Error critico: {str(e)[:200]}"
                 progress.finished_at = timezone.now()
                 progress.save()
@@ -1109,3 +1212,9 @@ class MessageAdmin(ModelAdmin):
             f'{total} mensajes con ID invalido eliminados.',
             level=messages.SUCCESS
         )
+
+
+@admin.register(ConfigEnvio)
+class ConfigEnvioAdmin(ModelAdmin):
+    list_display = ('owner', 'limite_diario', 'pausa_min', 'pausa_max')
+    search_fields = ('owner__email',)

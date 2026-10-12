@@ -31,7 +31,7 @@ function validarMedia(file) {
 
 const STATUS_LABEL = {
   draft: 'Borrador', scheduled: 'Programada', running: 'En curso',
-  completed: 'Completada', cancelled: 'Cancelada'
+  completed: 'Completada', cancelled: 'Cancelada', paused: 'Pausada'
 }
 const STATUS_COLOR = {
   draft:     { bg: '#f3f4f6', color: '#6b7280' },
@@ -39,6 +39,7 @@ const STATUS_COLOR = {
   running:   { bg: '#fef3c7', color: '#92400e' },
   completed: { bg: '#d1fae5', color: '#065f46' },
   cancelled: { bg: '#fee2e2', color: '#991b1b' },
+  paused:    { bg: '#ffedd5', color: '#9a3412' },
 }
 
 function Modal({ titulo, onClose, children }) {
@@ -228,6 +229,24 @@ export default function CampanasPage() {
     }
   }
 
+  // Reanudar: envía solo a los que faltan (y reintenta los bloqueados)
+  const reanudar = async (c) => {
+    setEjecutando(prev => new Set([...prev, c.id]))
+    try {
+      const { data } = await axios.post(`/whatsapp/api/campanas/${c.id}/ejecutar/`, { reanudar: true })
+      if (data.success) {
+        sileo.success({ title: 'Campaña reanudada', description: data.message || 'Enviando a los que faltan...' })
+        cargar()
+      } else {
+        sileo.error({ title: 'No se pudo reanudar', description: data.error || 'Intenta de nuevo' })
+      }
+    } catch (e) {
+      sileo.error({ title: 'No se pudo reanudar', description: e.response?.data?.error || 'Error desconocido' })
+    } finally {
+      setEjecutando(prev => { const n = new Set(prev); n.delete(c.id); return n })
+    }
+  }
+
   const inputStyle = {
     width: '100%', padding: '9px 12px', border: '1.5px solid #e5e7eb',
     borderRadius: 8, fontSize: '0.88rem', outline: 'none', boxSizing: 'border-box'
@@ -267,13 +286,16 @@ export default function CampanasPage() {
         {campanas.map(c => {
           const sc = STATUS_COLOR[c.status] || STATUS_COLOR.draft
           const p  = c.progreso
-          const isRunning = p?.is_running || ejecutando.has(c.id)
+          const pausada = c.status === 'paused'
+          // En pausa por límite diario el hilo sigue vivo, pero no está enviando
+          const isRunning = (p?.is_running && !pausada) || ejecutando.has(c.id)
+          const ocupada = ['running', 'scheduled', 'paused'].includes(c.status) || p?.is_running
 
           return (
             <div key={c.id} style={{
               background: '#fff', borderRadius: 12, padding: '18px 20px',
               boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
-              borderLeft: isRunning ? '4px solid #f59e0b' : '4px solid transparent',
+              borderLeft: isRunning ? '4px solid #f59e0b' : pausada ? '4px solid #fb923c' : '4px solid transparent',
               transition: 'border-left 0.3s'
             }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
@@ -319,9 +341,27 @@ export default function CampanasPage() {
                       </div>
                       {isRunning && (
                         <p style={{ fontSize: '0.7rem', color: '#92400e', margin: '5px 0 0', fontWeight: 500 }}>
-                          Enviando mensajes... actualizando cada 3 segundos
+                          Enviando en modo seguro: pausas al azar entre mensajes para cuidar tu número
                         </p>
                       )}
+                    </div>
+                  )}
+
+                  {/* Motivo de la pausa (límite diario, desconexión o bloqueos) */}
+                  {pausada && p?.motivo && (
+                    <div style={{
+                      marginTop: 10, padding: '8px 12px', borderRadius: 8, fontSize: '0.76rem', lineHeight: 1.5,
+                      background: '#fff7ed', color: '#9a3412', border: '1px solid #fed7aa',
+                    }}>
+                      {p.motivo}
+                    </div>
+                  )}
+                  {c.status === 'running' && !isRunning && p?.puede_reanudar && (
+                    <div style={{
+                      marginTop: 10, padding: '8px 12px', borderRadius: 8, fontSize: '0.76rem', lineHeight: 1.5,
+                      background: '#fff7ed', color: '#9a3412', border: '1px solid #fed7aa',
+                    }}>
+                      El envío se interrumpió (por ejemplo, al actualizar el servidor). Pulsa Reanudar para enviar a los que faltan.
                     </div>
                   )}
 
@@ -343,7 +383,27 @@ export default function CampanasPage() {
                 </div>
 
                 <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-                  {(c.status === 'running' || c.status === 'scheduled' || p?.is_running) && (
+                  {p?.puede_reanudar && (
+                    <button
+                      onClick={() => reanudar(c)}
+                      disabled={ejecutando.has(c.id)}
+                      style={{
+                        padding: '6px 14px', border: 'none', borderRadius: 7,
+                        cursor: ejecutando.has(c.id) ? 'not-allowed' : 'pointer',
+                        fontSize: '0.78rem', fontWeight: 700,
+                        background: ejecutando.has(c.id) ? '#fdba74' : '#ea580c', color: '#fff',
+                        display: 'flex', alignItems: 'center', gap: 6,
+                      }}
+                    >
+                      {ejecutando.has(c.id) ? <><Spinner /> Reanudando...</> : (
+                        <>
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12-7.5a1 1 0 0 0 0-1.72l-12-7.5A1 1 0 0 0 7 4.5Z" /></svg>
+                          Reanudar
+                        </>
+                      )}
+                    </button>
+                  )}
+                  {ocupada && (
                     <button onClick={() => setACancelar(c)} style={{
                       padding: '6px 14px', background: '#fff', color: '#b42318',
                       border: '1.5px solid #fca5a5', borderRadius: 7, cursor: 'pointer', fontSize: '0.78rem', fontWeight: 700,
@@ -353,7 +413,7 @@ export default function CampanasPage() {
                       Cancelar envío
                     </button>
                   )}
-                  {c.status !== 'running' && c.status !== 'scheduled' && (
+                  {!ocupada && (
                     <button
                       onClick={() => ejecutar(c)}
                       disabled={ejecutando.has(c.id)}
@@ -370,13 +430,13 @@ export default function CampanasPage() {
                       {ejecutando.has(c.id) ? <><Spinner /> Ejecutando...</> : 'Ejecutar'}
                     </button>
                   )}
-                  {c.status !== 'running' && c.status !== 'scheduled' && (
+                  {!ocupada && (
                     <button onClick={() => abrirEditar(c)} style={{
                       padding: '6px 14px', background: '#f3f4f6', color: '#374151',
                       border: 'none', borderRadius: 7, cursor: 'pointer', fontSize: '0.78rem', fontWeight: 600
                     }}>Editar</button>
                   )}
-                  {c.status !== 'running' && c.status !== 'scheduled' && (
+                  {!ocupada && (
                     <button onClick={() => eliminar(c)} style={{
                       padding: '6px 14px', background: '#fee2e2', color: '#991b1b',
                       border: 'none', borderRadius: 7, cursor: 'pointer', fontSize: '0.78rem', fontWeight: 600

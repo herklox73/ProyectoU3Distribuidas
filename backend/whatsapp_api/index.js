@@ -419,6 +419,13 @@ async function processSendQueue(s) {
         const send = (content) => s.sock.sendMessage(jid, content, { messageId: msgId });
 
         try {
+            // Modo seguro: aparece "escribiendo..." unos segundos, como una persona
+            try {
+                await s.sock.sendPresenceUpdate('composing', jid);
+                await sleep(Math.min(8000, 1500 + (message || '').length * 40));
+                await s.sock.sendPresenceUpdate('paused', jid);
+            } catch (_) { /* si falla, se envía igual */ }
+
             let msgResult;
             if (media_base64 && media_mimetype) {
                 const buffer = Buffer.from(media_base64, 'base64');

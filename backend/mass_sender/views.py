@@ -25,6 +25,7 @@ from .telefonos import normalizar_telefono
 from .estados import RANGO, aplicar_estado, puede_cambiar
 from . import reportes
 from . import etiquetas as etiquetas_util
+from . import modo_seguro
 
 def _whatsapp_url(path):
     """Devuelve la URL completa del servicio WhatsApp API."""
@@ -856,10 +857,18 @@ def api_campanas_list(request):
                 progreso = {
                     'total': p.total, 'sent': p.sent, 'failed': p.failed,
                     'is_running': p.is_running,
-                    'percent': int((p.sent + p.failed) / p.total * 100) if p.total > 0 else 0
+                    'percent': int((p.sent + p.failed) / p.total * 100) if p.total > 0 else 0,
+                    'motivo': p.last_error or '',
+                    'reanuda_at': timezone.localtime(p.reanuda_at).strftime('%d/%m/%Y %H:%M') if p.reanuda_at else None,
                 }
+                vivo = modo_seguro.hilo_vivo(p)
             except CampaignProgress.DoesNotExist:
-                progreso = {'total': 0, 'sent': 0, 'failed': 0, 'is_running': False, 'percent': 0}
+                progreso = {'total': 0, 'sent': 0, 'failed': 0, 'is_running': False, 'percent': 0,
+                            'motivo': '', 'reanuda_at': None}
+                vivo = False
+            # Se puede reanudar si está pausada, o si quedó "en curso" pero el
+            # envío se cortó (por ejemplo, al reiniciar el servidor)
+            progreso['puede_reanudar'] = c.status in ('paused', 'running') and not vivo
 
             data.append({
                 'id': c.id,
@@ -1045,8 +1054,27 @@ def api_campanas_ejecutar(request, pk):
         if not _es_dueno_o_staff(user, campana):
             return JsonResponse({'error': 'No autorizado'}, status=403)
 
-        if campana.status == 'running':
+        reanudar = str(request.GET.get('reanudar', '')).lower() in ('1', 'true', 'si')
+        if not reanudar:
+            try:
+                cuerpo = json.loads(request.body or b'{}')
+                reanudar = bool(cuerpo.get('reanudar')) if isinstance(cuerpo, dict) else False
+            except (ValueError, TypeError):
+                pass
+
+        progreso_actual = CampaignProgress.objects.filter(campaign=campana).first()
+        if modo_seguro.hilo_vivo(progreso_actual):
+            if campana.status == 'paused' and progreso_actual.reanuda_at:
+                hora = timezone.localtime(progreso_actual.reanuda_at).strftime('%d/%m/%Y %H:%M')
+                return JsonResponse({'success': False, 'error':
+                    f'Llegó al límite diario: sigue sola el {hora}. Si quieres que siga antes, '
+                    f'sube el límite diario en la página de WhatsApp.'})
             return JsonResponse({'success': False, 'error': 'La campaña ya está en ejecución'})
+        if reanudar and campana.status not in ('paused', 'running'):
+            return JsonResponse({'success': False, 'error': 'Solo se puede reanudar una campaña pausada.'})
+        if not reanudar and campana.status in ('paused', 'running'):
+            return JsonResponse({'success': False, 'error':
+                'La campaña quedó a medias: usa Reanudar para enviar solo a los que faltan.'})
 
         # Se envía a los contactos del dueño de la campaña, desde SU número
         qs = Contact.objects.filter(owner=campana.owner or user, is_opted_out=False).exclude(phone_number__contains='@')
@@ -1054,19 +1082,50 @@ def api_campanas_ejecutar(request, pk):
             # Una o varias etiquetas separadas por coma: basta con tener una
             qs = etiquetas_util.filtrar(qs, campana.target_tags)
 
-        contact_ids = list(qs.values_list('id', flat=True))
+        if reanudar:
+            # Fuera los que ya recibieron (o están por recibir) el mensaje.
+            # Se reintentan los bloqueados y los fallidos, salvo los que no
+            # tienen WhatsApp.
+            ya = Message.objects.filter(campaign=campana)
+            listos = set(ya.exclude(delivery_status__in=('failed', 'blocked'))
+                         .values_list('phone_number', flat=True))
+            listos |= set(ya.filter(delivery_status='failed', error_log__startswith='Sin WhatsApp')
+                          .values_list('phone_number', flat=True))
+            pendientes = [(cid, tel) for cid, tel in qs.values_list('id', 'phone_number') if tel not in listos]
+            contact_ids = [cid for cid, _ in pendientes]
+        else:
+            contact_ids = list(qs.values_list('id', flat=True))
         if not contact_ids:
+            if reanudar:
+                Campaign.objects.filter(pk=campana.pk).update(status='completed')
+                CampaignProgress.objects.filter(campaign=campana).update(
+                    is_running=False, latido=None, reanuda_at=None, finished_at=timezone.now(),
+                    last_error=None)
+                return JsonResponse({'success': True, 'message': 'No faltaba nadie: la campaña quedó completada.'})
             return JsonResponse({'success': False, 'error': 'No hay contactos activos para esta campaña'})
 
         campaign_lock = get_campaign_lock(campana.id)
         if not campaign_lock.acquire(blocking=False):
             return JsonResponse({'success': False, 'error': 'La campaña ya está siendo ejecutada'})
 
+        if reanudar:
+            # Los intentos fallidos o bloqueados de quienes se reintentan se
+            # quitan para no contarlos dos veces en los reportes
+            tels = {tel for _, tel in pendientes}
+            borrar = list(Message.objects.filter(campaign=campana, delivery_status__in=('failed', 'blocked'))
+                          .values_list('id', 'phone_number'))
+            ids_borrar = [mid for mid, tel in borrar if tel in tels]
+            for i in range(0, len(ids_borrar), 500):
+                Message.objects.filter(id__in=ids_borrar[i:i + 500]).delete()
+            # Marca de vida inmediata: evita que un doble clic lance dos envíos
+            CampaignProgress.objects.filter(campaign=campana).update(latido=timezone.now())
+
         # Cobro de créditos: 1 crédito = 1 mensaje. Los admins (staff)
         # no consumen créditos. Si no alcanza el saldo, se libera el
         # lock recién adquirido y se corta antes de lanzar el hilo.
         # Con BILLING_ENABLED=False (despliegue sin pagos) no se cobra.
-        if not user.is_staff and getattr(settings, 'BILLING_ENABLED', True):
+        # Al reanudar no se cobra de nuevo: se cobró al ejecutar la campaña.
+        if not reanudar and not user.is_staff and getattr(settings, 'BILLING_ENABLED', True):
             from billing.services import wallet_service
             from billing.utils.errors import AppError
             try:
@@ -1079,7 +1138,7 @@ def api_campanas_ejecutar(request, pk):
 
         def hilo_target(cid, cids, lock):
             try:
-                _send_campaign_background(cid, cids)
+                _send_campaign_background(cid, cids, reanudar=reanudar)
             finally:
                 lock.release()
 
@@ -1091,9 +1150,10 @@ def api_campanas_ejecutar(request, pk):
         )
         hilo.start()
 
+        texto = 'Campaña reanudada: faltan' if reanudar else 'Campaña iniciada para'
         return JsonResponse({
             'success': True,
-            'message': f'Campaña iniciada para {len(contact_ids)} contactos'
+            'message': f'{texto} {len(contact_ids)} contactos'
         })
     except Campaign.DoesNotExist:
         return JsonResponse({'error': 'Campaña no encontrada'}, status=404)
@@ -1273,12 +1333,13 @@ def api_campanas_cancelar(request, pk):
         return JsonResponse({'error': 'Campaña no encontrada'}, status=404)
     if not _es_dueno_o_staff(user, campana):
         return JsonResponse({'error': 'No autorizado'}, status=403)
-    if campana.status not in ('running', 'scheduled'):
+    if campana.status not in ('running', 'scheduled', 'paused'):
         return JsonResponse({'success': False, 'error': 'La campaña no se está enviando.'}, status=400)
 
     Campaign.objects.filter(pk=pk).update(status='cancelled')
     CampaignProgress.objects.filter(campaign=campana).update(
-        is_running=False, finished_at=timezone.now(), last_error='Envío cancelado por el usuario.')
+        is_running=False, finished_at=timezone.now(), latido=None, reanuda_at=None,
+        last_error='Envío cancelado por el usuario.')
 
     # Vaciar los mensajes que el gateway aún no alcanzó a enviar de ese número
     quitados = 0
@@ -1447,3 +1508,36 @@ def api_mensajes_bulk_delete(request):
         return JsonResponse({'eliminados': eliminados})
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
+
+
+@csrf_exempt
+def api_envio_config(request):
+    """
+    Modo seguro del número del usuario: límite diario y pausa entre mensajes.
+    GET devuelve la configuración y cuánto se envió hoy; POST la guarda.
+    """
+    user = _get_user(request)
+    if not user:
+        return JsonResponse({'error': 'No autenticado'}, status=401)
+    if request.method == 'POST':
+        try:
+            datos = json.loads(request.body or b'{}')
+            limite = int(datos.get('limite_diario'))
+            pmin = int(datos.get('pausa_min'))
+            pmax = int(datos.get('pausa_max'))
+        except (ValueError, TypeError):
+            return JsonResponse({'success': False, 'error': 'Valores inválidos.'}, status=400)
+        if not 0 <= limite <= modo_seguro.LIMITE_MAX:
+            return JsonResponse({'success': False, 'error':
+                f'El límite diario va de 0 (sin límite) a {modo_seguro.LIMITE_MAX}.'}, status=400)
+        if not (modo_seguro.PAUSA_MIN_PERMITIDA <= pmin <= pmax <= modo_seguro.PAUSA_MAX_PERMITIDA):
+            return JsonResponse({'success': False, 'error':
+                f'La pausa va de {modo_seguro.PAUSA_MIN_PERMITIDA} a {modo_seguro.PAUSA_MAX_PERMITIDA} '
+                f'segundos y la mínima no puede ser mayor que la máxima.'}, status=400)
+        cfg = modo_seguro.config_de(user.id)
+        cfg.limite_diario, cfg.pausa_min, cfg.pausa_max = limite, pmin, pmax
+        cfg.save()
+        return JsonResponse({'success': True, **modo_seguro.uso_de(user.id)})
+    if request.method != 'GET':
+        return JsonResponse({'error': 'Método no permitido'}, status=405)
+    return JsonResponse(modo_seguro.uso_de(user.id))

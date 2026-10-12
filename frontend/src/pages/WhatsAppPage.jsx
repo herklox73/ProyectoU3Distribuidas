@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { sileo } from 'sileo'
 import axios from '../api/axios'
 import { useWa } from '../context/WaContext'
+import ModoSeguro from '../components/whatsapp/ModoSeguro'
 
 export default function WhatsAppPage() {
   const { waListo } = useWa()   // estado global — siempre actualizado
@@ -174,6 +175,8 @@ export default function WhatsAppPage() {
           </div>
         </div>
       </div>
+
+      <ModoSeguro />
 
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }

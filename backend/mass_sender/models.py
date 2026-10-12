@@ -62,6 +62,7 @@ class Campaign(models.Model):
         ('draft', 'Borrador'),
         ('scheduled', 'Programada'),
         ('running', 'En Curso'),
+        ('paused', 'Pausada'),
         ('completed', 'Completada'),
         ('cancelled', 'Cancelada'),
     ]
@@ -120,6 +121,11 @@ class CampaignProgress(models.Model):
     started_at = models.DateTimeField(auto_now_add=True)
     finished_at = models.DateTimeField(blank=True, null=True)
     last_error = models.TextField(blank=True, null=True, verbose_name="Último error")
+    # El hilo de envío lo actualiza mientras vive: si se reinicia el servidor
+    # el hilo muere, y así se sabe que la campaña se puede reanudar.
+    latido = models.DateTimeField(blank=True, null=True, verbose_name="Último latido del envío")
+    # Cuándo sigue sola una campaña que llegó al límite diario
+    reanuda_at = models.DateTimeField(blank=True, null=True, verbose_name="Se reanuda")
 
     class Meta:
         db_table = 'campaign_progress'
@@ -171,3 +177,29 @@ class Message(models.Model):
 
     def __str__(self):
         return f"{self.get_direction_display()} - {self.phone_number} - {self.get_delivery_status_display()}"
+
+
+class ConfigEnvio(models.Model):
+    """
+    Modo seguro de envío, por usuario (cada usuario envía desde SU número).
+    Un número nuevo que manda muchos mensajes seguidos a desconocidos es
+    restringido por WhatsApp (error 463) o expulsado (401 conflict).
+    """
+    owner = models.OneToOneField(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        related_name='config_envio', verbose_name="Usuario",
+    )
+    limite_diario = models.PositiveIntegerField(
+        default=50, verbose_name="Límite diario de mensajes",
+        help_text="Mensajes de campaña por día desde este número. 0 = sin límite.",
+    )
+    pausa_min = models.PositiveIntegerField(default=20, verbose_name="Pausa mínima entre mensajes (s)")
+    pausa_max = models.PositiveIntegerField(default=60, verbose_name="Pausa máxima entre mensajes (s)")
+
+    class Meta:
+        db_table = 'config_envio'
+        verbose_name = "Configuración de envío"
+        verbose_name_plural = "Configuración de envío"
+
+    def __str__(self):
+        return f"Envío de {self.owner}: {self.limite_diario}/día"
