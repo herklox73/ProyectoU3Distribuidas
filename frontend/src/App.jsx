@@ -146,7 +146,8 @@ const NAV = NAV_ALL.filter(n => isEnabled(n.id))
 // Los admins no consumen créditos al ejecutar campañas (ver
 // mass_sender/views.py api_campanas_ejecutar), aunque sí puedan ver la
 // página.
-const USER_NAV_IDS  = ['inicio', 'campanas', 'contactos', 'importar', 'mensajes', 'whatsapp', 'notificaciones', 'seguridad', 'creditos', 'asistente'].filter(isEnabled)
+// Reportes: cada usuario ve solo SUS estadísticas (el backend lo limita).
+const USER_NAV_IDS  = ['inicio', 'campanas', 'contactos', 'importar', 'mensajes', 'reportes', 'whatsapp', 'notificaciones', 'seguridad', 'creditos', 'asistente'].filter(isEnabled)
 const ADMIN_NAV_IDS = NAV.map(n => n.id)
 
 function SidebarStatus({ collapsed }) {
@@ -347,7 +348,7 @@ function Layout() {
             habilitada (visibleIds); así una cuenta normal nunca llega a
             pedir datos de endpoints solo-admin (ej. la cola de correos),
             y viceversa. */}
-        {visibleIds.includes('inicio')         && <div style={{ display: pagina === 'inicio'    ? 'contents' : 'none' }}><InicioPage onNavegar={setPagina} /></div>}
+        {visibleIds.includes('inicio')         && <div style={{ display: pagina === 'inicio'    ? 'contents' : 'none' }}><InicioPage onNavegar={setPagina} visibles={visibleIds} /></div>}
         {visibleIds.includes('chat')           && <div style={{ display: pagina === 'chat'      ? 'contents' : 'none' }}><ChatPage /></div>}
         {visibleIds.includes('campanas')       && <div style={{ display: pagina === 'campanas'  ? 'contents' : 'none' }}><CampanasPage /></div>}
         {visibleIds.includes('contactos')      && <div style={{ display: pagina === 'contactos' ? 'contents' : 'none' }}><ContactosPage onNavegar={setPagina} /></div>}

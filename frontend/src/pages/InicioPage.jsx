@@ -61,7 +61,7 @@ const MODULOS = [
   },
 ]
 
-export default function InicioPage({ onNavegar }) {
+export default function InicioPage({ onNavegar, visibles }) {
   const { user } = useAuth()
   const { waListo } = useWa()
 
@@ -105,7 +105,7 @@ export default function InicioPage({ onNavegar }) {
 
       {/* Grid de módulos */}
       <div style={s.grid}>
-        {MODULOS.filter(m => import.meta.env.VITE_ENABLE_CREDITS !== 'false' || m.id !== 'creditos').map(m => (
+        {MODULOS.filter(m => (import.meta.env.VITE_ENABLE_CREDITS !== 'false' || m.id !== 'creditos') && (!visibles || visibles.includes(m.id))).map(m => (
           <button
             key={m.id}
             style={{ ...s.card, background: m.bg, borderColor: m.color + '33' }}
