@@ -146,8 +146,8 @@ const NAV = NAV_ALL.filter(n => isEnabled(n.id))
 // Los admins no consumen créditos al ejecutar campañas (ver
 // mass_sender/views.py api_campanas_ejecutar), aunque sí puedan ver la
 // página.
-// Reportes: cada usuario ve solo SUS estadísticas (el backend lo limita).
-const USER_NAV_IDS  = ['inicio', 'campanas', 'contactos', 'importar', 'mensajes', 'reportes', 'whatsapp', 'notificaciones', 'seguridad', 'creditos', 'asistente'].filter(isEnabled)
+// Chat y Reportes: cada usuario ve solo SUS conversaciones y estadísticas (el backend lo limita).
+const USER_NAV_IDS  = ['inicio', 'chat', 'campanas', 'contactos', 'importar', 'mensajes', 'reportes', 'whatsapp', 'notificaciones', 'seguridad', 'creditos', 'asistente'].filter(isEnabled)
 const ADMIN_NAV_IDS = NAV.map(n => n.id)
 
 function SidebarStatus({ collapsed }) {
