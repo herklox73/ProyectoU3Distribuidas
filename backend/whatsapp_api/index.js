@@ -328,7 +328,15 @@ async function startSession(uid) {
                 const statusNum = update.update?.status;
                 if (statusNum === undefined || statusNum === null) continue;
 
-                const statusMap = { 0: 'failed', 2: 'sent', 3: 'delivered', 4: 'read', 5: 'read' };
+                // Un aviso de error (0) de WhatsApp no es definitivo: muchas veces
+                // reintenta y el mensaje termina entregado. Solo se registra en el
+                // log; "Fallido" queda para cuando el envío realmente no sale.
+                if (statusNum === 0) {
+                    const codigo = (update.update?.messageStubParameters || []).join(',') || '?';
+                    console.warn(`[WA ${uid}] WhatsApp avisó error ${codigo} en el mensaje ${update.key.id} (puede reintentarse y llegar igual)`);
+                    continue;
+                }
+                const statusMap = { 2: 'sent', 3: 'delivered', 4: 'read', 5: 'read' };
                 const status = statusMap[statusNum];
                 if (!status) continue;
 
