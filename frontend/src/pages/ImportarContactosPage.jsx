@@ -41,25 +41,11 @@ function normalizarTelefono(raw) {
   return { ok: true, tel: limpio, err: null }
 }
 
-// ── Parser CSV ────────────────────────────────────────────────────────────
-function parseCSV(texto, sep) {
-  const lineas = texto.split(/\r?\n/).filter(l => l.trim())
-  if (!lineas.length) return { headers: [], rows: [] }
-  const parse = (l) => {
-    const res = []; let cur = ''; let inQ = false
-    for (let i = 0; i < l.length; i++) {
-      const c = l[i]
-      if (c === '"') { inQ = !inQ }
-      else if (c === sep && !inQ) { res.push(cur.trim()); cur = '' }
-      else cur += c
-    }
-    res.push(cur.trim())
-    return res
-  }
-  const headers = parse(lineas[0])
-  const rows = lineas.slice(1).map((l, i) => ({ _i: i, cells: parse(l) })).filter(r => r.cells.some(c => c))
-  return { headers, rows }
-}
+// Formatos que acepta el servidor (ver backend/mass_sender/archivos_contactos.py)
+const EXTENSIONES = ['.xlsx', '.xls', '.xlsm', '.xlsb', '.xltx', '.xltm', '.ods', '.csv', '.txt', '.tsv']
+const MAX_MB = 50
+const LOTE_IMPORTACION = 1000   // contactos por petición al importar
+const FILAS_VISTA = 300          // filas que se dibujan en la vista previa
 
 function descargarPlantilla() {
   const c = 'telefono,nombre,etiquetas,notas\n5930000000001,Juan Pérez,cliente,Interesado en producto A\n5930000000002,María López,lead,\n5930000000003,Carlos Ríos,cliente lead,Cliente VIP'
@@ -93,7 +79,7 @@ function autoMap(headers) {
 
 // ── Componente principal ──────────────────────────────────────────────────
 export default function ImportarContactosPage() {
-  const [separador, setSeparador]   = useState(',')
+  const [separador, setSeparador]   = useState('')
   const [archivo, setArchivo]       = useState(null)
   const [parsed, setParsed]         = useState(null)   // { headers, rows }
   const [mapeo, setMapeo]           = useState({})     // { colIndex: campo }
@@ -102,26 +88,39 @@ export default function ImportarContactosPage() {
   const [importing, setImporting]   = useState(false)
   const [resultado, setResultado]   = useState(null)
   const [dragging, setDragging]     = useState(false)
+  const [leyendo, setLeyendo]       = useState(false)
+  const [progreso, setProgreso]     = useState(null)   // { hechos, total }
   const inputRef                    = useRef(null)
 
-  const procesarArchivo = useCallback((file, sep) => {
+  // El archivo se manda al servidor solo para leerlo (no se guarda) y vuelve
+  // como columnas y filas para la vista previa.
+  const procesarArchivo = useCallback(async (file, sep) => {
     if (!file) return
-    if (!file.name.toLowerCase().endsWith('.csv') && !file.name.toLowerCase().endsWith('.txt')) {
-      sileo.error({ title: 'Formato inválido', description: 'El archivo debe ser .csv o .txt' }); return
+    const nombre = file.name.toLowerCase()
+    if (!EXTENSIONES.some(ext => nombre.endsWith(ext))) {
+      sileo.error({ title: 'Formato inválido', description: 'Usa Excel (.xlsx, .xls, .xlsm, .xlsb), .ods o .csv' }); return
     }
-    if (file.size > 5 * 1024 * 1024) { sileo.error({ title: 'Archivo muy grande', description: 'El límite es 5 MB' }); return }
+    if (file.size > MAX_MB * 1024 * 1024) { sileo.error({ title: 'Archivo muy grande', description: `El límite es ${MAX_MB} MB` }); return }
     setArchivo(file)
     setResultado(null)
-    const reader = new FileReader()
-    reader.onload = (e) => {
-      const { headers, rows } = parseCSV(e.target.result, sep)
-      const m = autoMap(headers)
-      setMapeo(m)
-      setParsed({ headers, rows })
+    setLeyendo(true)
+    try {
+      const form = new FormData()
+      form.append('archivo', file)
+      if (sep) form.append('separador', sep)
+      const { data } = await axios.post('/whatsapp/api/contactos/leer-archivo/', form)
+      const rows = data.rows.map((cells, i) => ({ _i: i, cells }))
+      setMapeo(autoMap(data.headers))
+      setParsed({ headers: data.headers, rows })
       setSeleccionados(new Set(rows.map(r => r._i)))
       setModal(true)
+    } catch (e) {
+      sileo.error({ title: 'No se pudo leer el archivo', description: e.response?.data?.error || 'Revisa que no esté dañado' })
+      setArchivo(null)
+      if (inputRef.current) inputRef.current.value = ''
+    } finally {
+      setLeyendo(false)
     }
-    reader.readAsText(file, 'utf-8')
   }, [])
 
   const onDrop = (e) => {
@@ -175,24 +174,35 @@ export default function ImportarContactosPage() {
     })
   }
 
+  // Se envía en partes de 1.000 para que archivos grandes (25.000+ filas)
+  // no se queden colgados y se vea el avance.
   const importar = async () => {
     if (!selValidas.length) return
     setImporting(true)
+    const contactos = selValidas.map(r => ({
+      telefono: r.telefono, nombre: r.nombre, etiquetas: r.etiquetas, notas: r.notas
+    }))
+    const total = { total: 0, creados: 0, actualizados: 0, errores: 0 }
+    setProgreso({ hechos: 0, total: contactos.length })
     try {
-      const contactos = selValidas.map(r => ({
-        telefono: r.telefono, nombre: r.nombre, etiquetas: r.etiquetas, notas: r.notas
-      }))
-      const { data } = await axios.post('/whatsapp/api/contactos/importar/', { contactos })
-      setResultado(data)
+      for (let i = 0; i < contactos.length; i += LOTE_IMPORTACION) {
+        const { data } = await axios.post('/whatsapp/api/contactos/importar/', { contactos: contactos.slice(i, i + LOTE_IMPORTACION) })
+        for (const k of Object.keys(total)) total[k] += data[k] || 0
+        setProgreso({ hechos: Math.min(i + LOTE_IMPORTACION, contactos.length), total: contactos.length })
+      }
+      setResultado(total)
       setModal(false)
       setArchivo(null)
       setParsed(null)
       if (inputRef.current) inputRef.current.value = ''
-      sileo.success({ title: 'Importación completada', description: `${data.creados} nuevos · ${data.actualizados} actualizados · ${data.errores} errores` })
+      sileo.success({ title: 'Importación completada', description: `${total.creados} nuevos · ${total.actualizados} actualizados · ${total.errores} errores` })
     } catch (e) {
-      sileo.error({ title: 'Error al importar', description: e.response?.data?.error || 'Error desconocido' })
+      // Lo que alcanzó a subir ya quedó guardado
+      if (total.total) setResultado(total)
+      sileo.error({ title: 'Error al importar', description: (e.response?.data?.error || 'Error de conexión') + (total.total ? ` · se guardaron ${total.total} antes del error` : '') })
     } finally {
       setImporting(false)
+      setProgreso(null)
     }
   }
 
@@ -204,7 +214,7 @@ export default function ImportarContactosPage() {
   // ── UI ────────────────────────────────────────────────────────────────
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: '28px 32px', background: '#f8f9fa' }}>
-      <h1 style={{ fontSize: '1.35rem', fontWeight: 700, marginBottom: 24 }}>Importar Contactos desde CSV</h1>
+      <h1 style={{ fontSize: '1.35rem', fontWeight: 700, marginBottom: 24 }}>Importar contactos desde Excel o CSV</h1>
 
       {/* Resultado */}
       {resultado && (
@@ -225,7 +235,7 @@ export default function ImportarContactosPage() {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
         {/* Panel subir */}
         <div style={{ background: '#fff', borderRadius: 14, padding: 24, boxShadow: '0 1px 4px rgba(0,0,0,0.06)' }}>
-          <h2 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: 6 }}>Subir archivo CSV</h2>
+          <h2 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: 6 }}>Subir archivo</h2>
           <p style={{ fontSize: '0.82rem', color: '#888', marginBottom: 16 }}>
             Sube tu archivo con los contactos. Podrás asignar cada columna al campo correcto.
           </p>
@@ -247,18 +257,19 @@ export default function ImportarContactosPage() {
               <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
             </svg>
             <p style={{ color: '#7c3aed', fontWeight: 600, margin: '0 0 4px' }}>
-              {archivo ? archivo.name : 'Arrastra tu CSV aquí o haz clic para seleccionar'}
+              {leyendo ? `Leyendo ${archivo?.name || 'archivo'}…` : archivo ? archivo.name : 'Arrastra tu archivo aquí o haz clic para seleccionar'}
             </p>
-            <p style={{ fontSize: '0.75rem', color: '#aaa', margin: 0 }}>Formatos: .csv — máximo 5MB</p>
-            <input ref={inputRef} type="file" accept=".csv,.txt" onChange={onFileChange} style={{ display: 'none' }} />
+            <p style={{ fontSize: '0.75rem', color: '#aaa', margin: 0 }}>Excel (.xlsx, .xls, .xlsm, .xlsb), .ods o .csv · máximo {MAX_MB} MB</p>
+            <input ref={inputRef} type="file" accept={EXTENSIONES.join(',')} onChange={onFileChange} style={{ display: 'none' }} />
           </div>
 
           {/* Separador */}
           <div style={{ marginBottom: 14 }}>
-            <label style={{ fontSize: '0.82rem', fontWeight: 600, color: '#374151', display: 'block', marginBottom: 6 }}>Separador de columnas</label>
+            <label style={{ fontSize: '0.82rem', fontWeight: 600, color: '#374151', display: 'block', marginBottom: 6 }}>Separador de columnas (solo CSV)</label>
             <select value={separador} onChange={e => onSepChange(e.target.value)}
               style={{ width: '100%', padding: '9px 12px', border: '1.5px solid #e5e7eb', borderRadius: 8, fontSize: '0.85rem', outline: 'none' }}>
-              <option value=",">Coma ( , ) — estándar</option>
+              <option value="">Detectar automáticamente</option>
+              <option value=",">Coma ( , )</option>
               <option value=";">Punto y coma ( ; )</option>
               <option value={'\t'}>Tabulación</option>
             </select>
@@ -280,7 +291,7 @@ export default function ImportarContactosPage() {
         <div style={{ background: '#fff', borderRadius: 14, padding: 24, boxShadow: '0 1px 4px rgba(0,0,0,0.06)' }}>
           <h2 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: 6 }}>Formato esperado</h2>
           <p style={{ fontSize: '0.82rem', color: '#888', marginBottom: 14 }}>
-            Tu CSV puede tener cualquier columna — podrás asignarlas al importar. Formato ideal:
+            Se lee la primera hoja del Excel. Puede tener cualquier columna: podrás asignarlas al importar. Formato ideal:
           </p>
           <pre style={{ background: '#f8f9fa', padding: '14px 16px', borderRadius: 8, fontSize: '0.78rem', fontFamily: 'monospace', color: '#374151', overflowX: 'auto', marginBottom: 16 }}>
 {`telefono,nombre,etiquetas,notas
@@ -321,7 +332,7 @@ export default function ImportarContactosPage() {
 
               <div style={{ marginTop: 12 }}>
                 <p style={{ fontSize: '0.72rem', fontWeight: 700, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
-                  Asigna cada columna del CSV a un campo
+                  Asigna cada columna del archivo a un campo
                 </p>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
                   {parsed.headers.map((h, i) => (
@@ -373,7 +384,7 @@ export default function ImportarContactosPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filasVistas.map((r) => (
+                  {filasVistas.slice(0, FILAS_VISTA).map((r) => (
                     <tr key={r._i} style={{ borderBottom: '1px solid #f8f9fa', background: !r.telOk ? '#fff5f5' : seleccionados.has(r._i) ? '#faf5ff' : '#fff', opacity: !r.telOk ? 0.7 : 1 }}>
                       <td style={{ padding: '7px 10px', textAlign: 'center' }}>
                         {r.telOk
@@ -403,17 +414,22 @@ export default function ImportarContactosPage() {
                   ))}
                 </tbody>
               </table>
+              {filasVistas.length > FILAS_VISTA && (
+                <p style={{ textAlign: 'center', fontSize: '0.78rem', color: '#888', padding: '12px 0 16px', margin: 0 }}>
+                  Se muestran las primeras {FILAS_VISTA} filas de {filasVistas.length.toLocaleString('es-EC')}. Al importar se incluyen todas las seleccionadas.
+                </p>
+              )}
             </div>
 
             {/* Footer modal */}
             <div style={{ padding: '14px 24px', borderTop: '1px solid #e5e7eb', display: 'flex', alignItems: 'center', gap: 12 }}>
               <span style={{ fontSize: '0.82rem', color: '#555', flex: 1 }}>
-                <strong style={{ color: '#7c3aed' }}>{selValidas.length}</strong> contactos listos para importar
+                <strong style={{ color: '#7c3aed' }}>{selValidas.length.toLocaleString('es-EC')}</strong> contactos listos para importar
               </span>
               <button onClick={() => setModal(false)} style={{ padding: '9px 22px', background: '#f3f4f6', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}>Cancelar</button>
               <button onClick={importar} disabled={importing || !selValidas.length || !telColAsignada}
                 style={{ padding: '9px 26px', background: (importing || !selValidas.length || !telColAsignada) ? '#9ca3af' : '#7c3aed', color: '#fff', border: 'none', borderRadius: 8, fontWeight: 700, cursor: (importing || !selValidas.length || !telColAsignada) ? 'not-allowed' : 'pointer', fontSize: '0.88rem' }}>
-                {importing ? 'Importando...' : `Importar contactos`}
+                {importing && progreso ? `Importando ${progreso.hechos.toLocaleString('es-EC')} de ${progreso.total.toLocaleString('es-EC')}…` : 'Importar contactos'}
               </button>
             </div>
           </div>

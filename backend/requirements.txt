@@ -21,3 +21,7 @@ django-cors-headers==4.4.0
 # ── Reportes descargables (se generan en memoria) ───────────────────
 openpyxl==3.1.5
 reportlab==4.4.10
+
+# ── Importar contactos desde Excel antiguo (.xls) y binario (.xlsb) ──
+xlrd==2.0.1
+pyxlsb==1.0.10

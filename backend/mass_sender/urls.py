@@ -63,6 +63,7 @@ urlpatterns = [
     # Contactos
     path('api/contactos/', views.api_contactos_list, name='api_contactos_list'),
     path('api/contactos/importar/', views.api_contactos_importar, name='api_contactos_importar'),
+    path('api/contactos/leer-archivo/', views.api_contactos_leer_archivo, name='api_contactos_leer_archivo'),
     path('api/contactos/bulk-delete/', views.api_contactos_bulk_delete, name='api_contactos_bulk_delete'),
     path('api/contactos/<int:pk>/', views.api_contactos_detail, name='api_contactos_detail'),
 

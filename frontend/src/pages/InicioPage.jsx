@@ -26,8 +26,8 @@ const MODULOS = [
   },
   {
     id: 'importar',
-    titulo: 'Importar CSV',
-    desc: 'Importa contactos masivamente desde un archivo CSV.',
+    titulo: 'Importar contactos',
+    desc: 'Importa contactos masivamente desde Excel o CSV.',
     color: '#f59e0b',
     bg: 'rgba(245,158,11,0.08)',
   },

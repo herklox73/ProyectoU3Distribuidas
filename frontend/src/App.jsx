@@ -123,7 +123,7 @@ const NAV_ALL = [
   { id: 'chat',           label: 'Chat'                },
   { id: 'campanas',       label: 'Campañas'            },
   { id: 'contactos',      label: 'Contactos'           },
-  { id: 'importar',       label: 'Importar CSV'        },
+  { id: 'importar',       label: 'Importar contactos'  },
   { id: 'mensajes',       label: 'Mensajes'            },
   { id: 'reportes',       label: 'Reportes'            },
   { id: 'whatsapp',       label: 'Conectar WhatsApp'   },

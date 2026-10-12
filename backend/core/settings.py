@@ -166,6 +166,12 @@ AUTH_PASSWORD_VALIDATORS = [
 
 # ── Internacionalización ──────────────────────────────────────────
 LANGUAGE_CODE = 'es-es'
+# Importación de contactos: archivos de hasta 50 MB y lotes JSON grandes.
+# Los archivos de más de 2,5 MB pasan por un archivo temporal que Django
+# borra al terminar la petición (no se guardan).
+DATA_UPLOAD_MAX_MEMORY_SIZE = 20 * 1024 * 1024
+DATA_UPLOAD_MAX_NUMBER_FIELDS = 20000
+
 TIME_ZONE = 'America/Guayaquil'  # Ecuador (UTC-5)
 USE_I18N = True
 USE_TZ = True

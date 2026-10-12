@@ -1152,6 +1152,33 @@ def api_contactos_importar(request):
         return JsonResponse({'success': False, 'error': str(e)}, status=500)
 
 
+@csrf_exempt
+def api_contactos_leer_archivo(request):
+    """
+    Lee un Excel (.xlsx, .xls, .xlsm, .xlsb), .ods o .csv y devuelve sus
+    columnas y filas para la vista previa. El archivo no se guarda.
+    """
+    from .archivos_contactos import ArchivoInvalido, leer_archivo
+    user = _get_user(request)
+    if not user:
+        return JsonResponse({'error': 'No autenticado'}, status=401)
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Método no permitido'}, status=405)
+    archivo = request.FILES.get('archivo')
+    if not archivo:
+        return JsonResponse({'error': 'No se recibió ningún archivo.'}, status=400)
+    separador = request.POST.get('separador', '')
+    if separador not in ('', ',', ';', '\t', '|'):
+        separador = ''
+    try:
+        encabezados, filas = leer_archivo(archivo, separador)
+    except ArchivoInvalido as e:
+        return JsonResponse({'error': str(e)}, status=400)
+    except Exception:
+        return JsonResponse({'error': 'No se pudo leer el archivo. Revisa que no esté dañado.'}, status=400)
+    return JsonResponse({'headers': encabezados, 'rows': filas, 'total': len(filas)})
+
+
 # ── Mensajes ──────────────────────────────────────────────────────────────
 
 def api_mensajes_list(request):
